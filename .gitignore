@@ -1,0 +1,28 @@
+# Rust
+backend/target/
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python/cache artifacts from tools or local experiments
+__pycache__/
+*.py[cod]
+
+# Local runtime data
+media/
+backend/media/
+*.log
+
+# IDE and operating system files
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store

@@ -1,0 +1,58 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      RUST_LOG: info
+      DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
+      REDIS_URL: redis://redis:6379
+    ports: ["8080:8080"]
+    volumes: ["media_data:/app/media"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["/app/vision-event-api"]
+    environment:
+      RUST_LOG: info
+      WORKER_MODE: "1"
+      DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
+      REDIS_URL: redis://redis:6379
+    volumes: ["media_data:/app/media"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports: ["8088:80"]
+    volumes: ["media_data:/usr/share/nginx/html/media:ro"]
+    depends_on: [api]
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: vision_events
+      MYSQL_USER: vision
+      MYSQL_PASSWORD: vision_dev_password
+      MYSQL_ROOT_PASSWORD: root_dev_password
+    volumes: ["mysql_data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  mysql_data:
+  media_data:
