@@ -38,6 +38,6 @@ fn status_values_are_stable_api_strings() {
     );
     assert_eq!(
         serde_json::to_string(&Evidence::default()).unwrap(),
-        "{\"thumbnail_url\":null,\"clip_url\":null,\"frame_urls\":[]}"
+        "{\"thumbnail_url\":null,\"clip_url\":null,\"frame_urls\":[],\"frames\":[]}"
     );
 }
