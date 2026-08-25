@@ -1,14 +1,46 @@
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{header::CONTENT_TYPE, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
+use std::env;
 use tower::ServiceExt;
-use vision_event_api::{api, application::AppState};
+use vision_event_api::{
+    api,
+    application::AppState,
+    persistence::{Database, DatabaseConfig},
+    storage::MediaStorage,
+};
 
 fn app() -> Router {
     api::router(AppState::default())
+}
+
+#[tokio::test]
+async fn media_route_serves_evidence_images_and_rejects_unsafe_paths() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("media");
+    let image = root.join("evidence").join("event-1").join("frame-0001.jpg");
+    tokio::fs::create_dir_all(image.parent().unwrap()).await.unwrap();
+    tokio::fs::write(&image, b"jpeg-evidence").await.unwrap();
+    let mut state = AppState::default();
+    state.storage = MediaStorage::new(root);
+    let router = api::router(state);
+
+    let image_response = router
+        .clone()
+        .oneshot(Request::get("/media/evidence/event-1/frame-0001.jpg").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(image_response.status(), StatusCode::OK);
+    assert_eq!(image_response.headers()[CONTENT_TYPE], "image/jpeg");
+
+    let unsafe_response = router
+        .oneshot(Request::get("/media/%2E%2E/Cargo.toml").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(!unsafe_response.status().is_success());
 }
 
 #[tokio::test]
@@ -18,6 +50,84 @@ async fn health_returns_ok() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_job_loads_completed_job_from_mysql_when_api_memory_is_empty() {
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    database.migrate().await.unwrap();
+    let state = AppState::default();
+    let mut job = state.create_job("completed-from-worker.mp4".into(), 1_000);
+    job.status = vision_event_api::domain::JobStatus::Completed;
+    job.progress = 100;
+    database.save_job(&job).await.unwrap();
+
+    let response = api::router(AppState::default().with_integrations(Some(database.clone()), None))
+        .oneshot(
+            Request::get(format!("/api/v1/jobs/{}", job.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["progress"], 100);
+
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
+        .bind(job.id.to_string())
+        .execute(&database.pool)
+        .await;
+}
+
+#[tokio::test]
+async fn get_job_prefers_mysql_over_stale_api_memory_state() {
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    database.migrate().await.unwrap();
+    let state = AppState::default().with_integrations(Some(database.clone()), None);
+    let mut job = state.create_job("stale-memory.mp4".into(), 1_000);
+    database.save_job(&job).await.unwrap();
+    job.status = vision_event_api::domain::JobStatus::Processing;
+    job.progress = 1;
+    state.jobs.write().unwrap().insert(job.id, job.clone());
+
+    let mut completed = job.clone();
+    completed.status = vision_event_api::domain::JobStatus::Completed;
+    completed.progress = 100;
+    database.save_job(&completed).await.unwrap();
+
+    let response = api::router(state)
+        .oneshot(
+            Request::get(format!("/api/v1/jobs/{}", job.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["progress"], 100);
+
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
+        .bind(job.id.to_string())
+        .execute(&database.pool)
+        .await;
 }
 
 #[tokio::test]
@@ -44,7 +154,7 @@ async fn create_video_and_list_seed_event() {
 }
 
 #[tokio::test]
-async fn upload_then_process_video_returns_completed_job() {
+async fn upload_then_process_video_reports_processing_failure_for_invalid_media() {
     let service = app();
     let body = b"--demo\r\nContent-Disposition: form-data; name=\"file\"; filename=\"clip.mp4\"\r\nContent-Type: video/mp4\r\n\r\nfake-video\r\n--demo--\r\n";
     let response = service
@@ -77,8 +187,27 @@ async fn upload_then_process_video_returns_completed_job() {
     assert_eq!(response.status(), StatusCode::OK);
     let processed: serde_json::Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(processed["status"], "completed");
+    assert_eq!(processed["status"], "failed");
     assert_eq!(processed["progress"], 100);
+}
+
+#[tokio::test]
+async fn upload_accepts_video_larger_than_axum_default_body_limit() {
+    let service = app();
+    let payload = vec![b'x'; 3 * 1024 * 1024];
+    let mut body = b"--large\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.mp4\"\r\nContent-Type: video/mp4\r\n\r\n".to_vec();
+    body.extend_from_slice(&payload);
+    body.extend_from_slice(b"\r\n--large--\r\n");
+    let response = service
+        .oneshot(
+            Request::post("/api/v1/videos/upload")
+                .header("content-type", "multipart/form-data; boundary=large")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -127,7 +256,9 @@ async fn event_can_be_confirmed_and_ignored() {
         .oneshot(
             Request::post("/api/v1/videos")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"filename":"review.mp4","duration_ms":12000}"#))
+                .body(Body::from(
+                    r#"{"filename":"review.mp4","duration_ms":12000}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -160,15 +291,8 @@ async fn event_can_be_confirmed_and_ignored() {
         .await
         .unwrap();
     assert_eq!(confirmed.status(), StatusCode::OK);
-    let confirmed_body: serde_json::Value = serde_json::from_slice(
-        &confirmed
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes(),
-    )
-    .unwrap();
+    let confirmed_body: serde_json::Value =
+        serde_json::from_slice(&confirmed.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(confirmed_body["status"], "confirmed");
 
     let ignored = service
@@ -180,14 +304,254 @@ async fn event_can_be_confirmed_and_ignored() {
         .await
         .unwrap();
     assert_eq!(ignored.status(), StatusCode::OK);
-    let ignored_body: serde_json::Value = serde_json::from_slice(
-        &ignored
-            .into_body()
-            .collect()
+    let ignored_body: serde_json::Value =
+        serde_json::from_slice(&ignored.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(ignored_body["status"], "ignored");
+}
+
+#[tokio::test]
+async fn persisted_worker_event_can_be_confirmed_from_a_fresh_api_process() {
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    database.migrate().await.unwrap();
+
+    let worker_state = AppState::default();
+    let job = worker_state.create_job("worker-event.mp4".into(), 1_000);
+    let event = worker_state.seed_event(&job);
+    database.save_job(&job).await.unwrap();
+    database.save_event(&event).await.unwrap();
+
+    let response = api::router(AppState::default().with_integrations(Some(database.clone()), None))
+        .oneshot(
+            Request::post(format!("/api/v1/events/{}/confirm", event.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["status"], "confirmed");
+
+    let saved = database
+        .list_events()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|saved| saved.id == event.id)
+        .unwrap();
+    assert_eq!(saved.status, vision_event_api::domain::EventStatus::Confirmed);
+
+    let _ = sqlx::query("DELETE FROM events WHERE id = ?")
+        .bind(event.id.to_string())
+        .execute(&database.pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
+        .bind(job.id.to_string())
+        .execute(&database.pool)
+        .await;
+}
+
+#[tokio::test]
+async fn persisted_worker_event_can_be_deleted_from_a_fresh_api_process() {
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    database.migrate().await.unwrap();
+
+    let worker_state = AppState::default();
+    let job = worker_state.create_job("delete-worker-event.mp4".into(), 1_000);
+    let event = worker_state.seed_event(&job);
+    database.save_job(&job).await.unwrap();
+    database.save_event(&event).await.unwrap();
+
+    let response = api::router(AppState::default().with_integrations(Some(database.clone()), None))
+        .oneshot(
+            Request::delete(format!("/api/v1/events/{}", event.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(database.get_event(event.id).await.unwrap().is_none());
+
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
+        .bind(job.id.to_string())
+        .execute(&database.pool)
+        .await;
+}
+
+#[tokio::test]
+async fn jobs_can_be_listed() {
+    let service = app();
+    for filename in ["one.mp4", "two.mp4"] {
+        let response = service
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/videos")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"filename":"{filename}","duration_ms":1000}}"#
+                    )))
+                    .unwrap(),
+            )
             .await
-            .unwrap()
-            .to_bytes(),
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let response = service
+        .oneshot(Request::get("/api/v1/jobs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn completed_job_can_be_renamed() {
+    let service = app();
+    let response = service
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/videos")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"filename":"before.mp4"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(
+        &response.into_body().collect().await.unwrap().to_bytes(),
     )
     .unwrap();
-    assert_eq!(ignored_body["status"], "ignored");
+    let id = created["id"].as_str().unwrap();
+
+    let response = service
+        .oneshot(
+            Request::put(format!("/api/v1/jobs/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"filename":"after.mp4"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let renamed: serde_json::Value = serde_json::from_slice(
+        &response.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(renamed["filename"], "after.mp4");
+}
+
+#[tokio::test]
+async fn job_delete_removes_job_and_events_but_rejects_processing_job() {
+    let service = app();
+    let response = service
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/videos")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"filename":"delete-me.mp4"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(
+        &response.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let id = created["id"].as_str().unwrap();
+    let response = service
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/jobs/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = service
+        .oneshot(Request::get("/api/v1/jobs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let jobs: serde_json::Value = serde_json::from_slice(
+        &response.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(jobs.as_array().unwrap().iter().all(|job| job["id"] != id));
+}
+
+#[tokio::test]
+async fn job_mutations_validate_names_and_processing_deletes() {
+    let service = app();
+    let response = service
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/videos")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"filename":"processing.mp4"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(
+        &response.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let id = created["id"].as_str().unwrap();
+    let too_long = "x".repeat(256);
+    let response = service
+        .clone()
+        .oneshot(
+            Request::put(format!("/api/v1/jobs/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"filename": too_long}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let state = AppState::default();
+    let job = state.create_job("processing.mp4".into(), 0);
+    state.update_job(job.id, vision_event_api::domain::JobStatus::Processing, 1);
+    let response = api::router(state)
+        .oneshot(
+            Request::delete(format!("/api/v1/jobs/{}", job.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn pending_job_can_be_deleted() {
+    let state = AppState::default();
+    let job = state.create_job("pending.mp4".into(), 0);
+    let response = api::router(state)
+        .oneshot(
+            Request::delete(format!("/api/v1/jobs/{}", job.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
