@@ -34,6 +34,7 @@ class YoloDetector:
             verbose=False,
         )
         detections: list[dict[str, Any]] = []
+        width, height = image.size
         for result in results:
             names = result.names
             boxes = result.boxes
@@ -43,7 +44,12 @@ class YoloDetector:
                     {
                         "class_name": names[class_id],
                         "confidence": float(boxes.conf[index].item()),
-                        "bbox": [float(value) for value in boxes.xyxy[index].tolist()],
+                        "bbox": [
+                            float(boxes.xyxy[index][0].item()) / width,
+                            float(boxes.xyxy[index][1].item()) / height,
+                            float(boxes.xyxy[index][2].item()) / width,
+                            float(boxes.xyxy[index][3].item()) / height,
+                        ],
                         "track_id": None,
                     }
                 )

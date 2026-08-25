@@ -39,8 +39,12 @@ impl MediaStorage {
         tokio::fs::create_dir_all(&directory).await?;
         let mut evidence_frames = Vec::with_capacity(frames.len());
         for (index, (timestamp_ms, source, detections)) in frames.iter().enumerate() {
-            let filename = format!("frame-{index:04}-{timestamp_ms}.jpg");
-            tokio::fs::copy(source, directory.join(&filename)).await?;
+            let filename = format!("frame-{index:04}-{timestamp_ms}-annotated.jpg");
+            let destination = directory.join(&filename);
+            if let Err(error) = annotate_frame(source, &destination, detections) {
+                eprintln!("failed to annotate evidence frame {}: {error}", source.display());
+                tokio::fs::copy(source, &destination).await?;
+            }
             evidence_frames.push(EvidenceFrame {
                 timestamp_ms: *timestamp_ms,
                 image_url: format!("/media/evidence/{event_id}/{filename}"),
@@ -59,6 +63,33 @@ impl MediaStorage {
             Err(error) => Err(error),
         }
     }
+}
+
+fn annotate_frame(source: &Path, destination: &Path, detections: &[Detection]) -> image::ImageResult<()> {
+    let mut image = image::open(source)?.to_rgb8();
+    let (width, height) = image.dimensions();
+    for detection in detections {
+        let legacy_pixels = detection.bbox.iter().any(|value| *value > 1.0);
+        let scale_x = if legacy_pixels { 1.0 / width as f32 } else { 1.0 };
+        let scale_y = if legacy_pixels { 1.0 / height as f32 } else { 1.0 };
+        let x1 = (detection.bbox[0] * scale_x).clamp(0.0, 1.0) * width as f32;
+        let y1 = (detection.bbox[1] * scale_y).clamp(0.0, 1.0) * height as f32;
+        let x2 = (detection.bbox[2] * scale_x).clamp(0.0, 1.0) * width as f32;
+        let y2 = (detection.bbox[3] * scale_y).clamp(0.0, 1.0) * height as f32;
+        let (x1, x2) = (x1.min(x2) as u32, x1.max(x2) as u32);
+        let (y1, y2) = (y1.min(y2) as u32, y1.max(y2) as u32);
+        for thickness in 0..3 {
+            for x in x1.saturating_add(thickness)..=x2.saturating_sub(thickness).min(width.saturating_sub(1)) {
+                if y1.saturating_add(thickness) < height { image.put_pixel(x, y1 + thickness, image::Rgb([64, 232, 190])); }
+                if y2.saturating_sub(thickness) < height { image.put_pixel(x, y2.saturating_sub(thickness), image::Rgb([64, 232, 190])); }
+            }
+            for y in y1.saturating_add(thickness)..=y2.saturating_sub(thickness).min(height.saturating_sub(1)) {
+                if x1.saturating_add(thickness) < width { image.put_pixel(x1 + thickness, y, image::Rgb([64, 232, 190])); }
+                if x2.saturating_sub(thickness) < width { image.put_pixel(x2.saturating_sub(thickness), y, image::Rgb([64, 232, 190])); }
+            }
+        }
+    }
+    image.save(destination)
 }
 
 pub fn sanitize_filename(filename: &str) -> String {
