@@ -1,4 +1,4 @@
-use crate::{domain::{Event, EventStatus, JobStatus, VideoJob}, rules::EventRule};
+use crate::{domain::{Event, EventReview, EventStatus, JobStatus, VideoJob}, rules::EventRule};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool, Row};
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -129,21 +129,27 @@ impl Database {
     }
 
     pub async fn save_event(&self, event: &Event) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO events (id, job_id, event_type, start_time_ms, end_time_ms, severity, status, confidence, objects_json, evidence_json, analysis_json, rule_version, prompt_version, detector_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), analysis_json=VALUES(analysis_json)")
-            .bind(event.id.to_string()).bind(event.job_id.to_string()).bind(&event.event_type).bind(event.start_time_ms as i64).bind(event.end_time_ms as i64).bind(&event.severity).bind(event_status_name(&event.status)).bind(event.confidence).bind(serde_json::to_string(&event.objects).unwrap_or_default()).bind(serde_json::to_string(&event.evidence).unwrap_or_default()).bind(serde_json::to_string(&event.analysis).unwrap_or_default()).bind(&event.rule_version).bind(&event.prompt_version).bind(&event.detector_version).execute(&self.pool).await?;
+        sqlx::query("INSERT INTO events (id, job_id, event_type, start_time_ms, end_time_ms, severity, status, confidence, objects_json, evidence_json, analysis_json, rule_version, prompt_version, detector_version, reviewer, reviewed_at, review_note, disposition, zone_key, association_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), analysis_json=VALUES(analysis_json), reviewer=VALUES(reviewer), reviewed_at=VALUES(reviewed_at), review_note=VALUES(review_note), disposition=VALUES(disposition), zone_key=VALUES(zone_key), association_key=VALUES(association_key)")
+            .bind(event.id.to_string()).bind(event.job_id.to_string()).bind(&event.event_type).bind(event.start_time_ms as i64).bind(event.end_time_ms as i64).bind(&event.severity).bind(event_status_name(&event.status)).bind(event.confidence).bind(serde_json::to_string(&event.objects).unwrap_or_default()).bind(serde_json::to_string(&event.evidence).unwrap_or_default()).bind(serde_json::to_string(&event.analysis).unwrap_or_default()).bind(&event.rule_version).bind(&event.prompt_version).bind(&event.detector_version).bind(&event.reviewer).bind(&event.reviewed_at).bind(&event.review_note).bind(&event.disposition).bind(&event.zone_key).bind(&event.association_key).execute(&self.pool).await?;
         Ok(())
     }
 
     pub async fn list_events(&self) -> Result<Vec<Event>, sqlx::Error> {
-        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC LIMIT 200").fetch_all(&self.pool).await?;
+        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, e.reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC LIMIT 200").fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| event_from_row(&row))
             .collect())
     }
 
+    pub async fn list_events_all(&self) -> Result<Vec<Event>, sqlx::Error> {
+        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, e.reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC")
+            .fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().filter_map(|row| event_from_row(&row)).collect())
+    }
+
     pub async fn get_event(&self, id: Uuid) -> Result<Option<Event>, sqlx::Error> {
-        let row = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE e.id = ? AND j.deleted_at IS NULL")
+        let row = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, e.reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE e.id = ? AND j.deleted_at IS NULL")
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await?;
@@ -164,6 +170,24 @@ impl Database {
             return Ok(None);
         }
         self.get_event(id).await
+    }
+
+    pub async fn save_review(&self, review: &EventReview) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO event_review_history (id, event_id, old_status, new_status, reviewer, note, disposition) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(review.id.to_string()).bind(review.event_id.to_string()).bind(event_status_name(&review.old_status)).bind(event_status_name(&review.new_status)).bind(&review.reviewer).bind(&review.note).bind(&review.disposition).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn list_reviews(&self, event_id: Uuid) -> Result<Vec<EventReview>, sqlx::Error> {
+        let rows = sqlx::query("SELECT id, event_id, old_status, new_status, reviewer, note, disposition, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at FROM event_review_history WHERE event_id = ? ORDER BY created_at ASC")
+            .bind(event_id.to_string()).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().filter_map(|row| Some(EventReview {
+            id: Uuid::parse_str(&row.try_get::<String, _>("id").ok()?).ok()?,
+            event_id: Uuid::parse_str(&row.try_get::<String, _>("event_id").ok()?).ok()?,
+            old_status: event_status_from_name(&row.try_get::<String, _>("old_status").ok()?),
+            new_status: event_status_from_name(&row.try_get::<String, _>("new_status").ok()?),
+            reviewer: row.try_get("reviewer").ok()?, note: row.try_get("note").ok()?, disposition: row.try_get("disposition").ok()?, created_at: row.try_get("created_at").ok()?,
+        })).collect())
     }
 
     pub async fn delete_event(&self, id: Uuid) -> Result<bool, sqlx::Error> {
@@ -210,7 +234,13 @@ fn event_status_name(status: &EventStatus) -> &'static str {
         EventStatus::Unreviewed => "unreviewed",
         EventStatus::Confirmed => "confirmed",
         EventStatus::Ignored => "ignored",
+        EventStatus::Processing => "processing",
+        EventStatus::Resolved => "resolved",
+        EventStatus::Closed => "closed",
     }
+}
+fn event_status_from_name(status: &str) -> EventStatus {
+    match status { "confirmed" => EventStatus::Confirmed, "ignored" => EventStatus::Ignored, "processing" => EventStatus::Processing, "resolved" => EventStatus::Resolved, "closed" => EventStatus::Closed, _ => EventStatus::Unreviewed }
 }
 fn event_from_row(row: &sqlx::mysql::MySqlRow) -> Option<Event> {
     Some(Event {
@@ -220,9 +250,12 @@ fn event_from_row(row: &sqlx::mysql::MySqlRow) -> Option<Event> {
         start_time_ms: row.try_get::<u64, _>("start_time_ms").ok()?,
         end_time_ms: row.try_get::<u64, _>("end_time_ms").ok()?,
         severity: row.try_get("severity").ok()?,
-        status: match row.try_get::<String, _>("status").ok()?.as_str() {
+            status: match row.try_get::<String, _>("status").ok()?.as_str() {
             "confirmed" => EventStatus::Confirmed,
             "ignored" => EventStatus::Ignored,
+            "processing" => EventStatus::Processing,
+            "resolved" => EventStatus::Resolved,
+            "closed" => EventStatus::Closed,
             _ => EventStatus::Unreviewed,
         },
         confidence: row.try_get("confidence").ok()?,
@@ -235,5 +268,12 @@ fn event_from_row(row: &sqlx::mysql::MySqlRow) -> Option<Event> {
         rule_version: row.try_get("rule_version").ok()?,
         prompt_version: row.try_get("prompt_version").ok()?,
         detector_version: row.try_get("detector_version").ok()?,
+        reviewer: row.try_get("reviewer").ok()?,
+        reviewed_at: row.try_get("reviewed_at").ok()?,
+        review_note: row.try_get("review_note").ok()?,
+        disposition: row.try_get("disposition").ok()?,
+        zone_key: row.try_get("zone_key").ok()?,
+        association_key: row.try_get("association_key").ok()?,
+        related_event_ids: Vec::new(),
     })
 }

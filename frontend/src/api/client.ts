@@ -1,4 +1,4 @@
-import type { EventItem, EventRule, VideoJob } from '../types/events';
+import type { EventItem, EventPage, EventReview, EventRule, VideoJob } from '../types/events';
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }, ...init });
@@ -33,4 +33,9 @@ export const api = {
   updateRule: (rule: EventRule) => request<EventRule>(`/api/v1/event-rules/${rule.event_type}`, { method: 'PUT', body: JSON.stringify({ class_name: rule.class_name, min_confidence: rule.min_confidence, min_duration_ms: rule.min_duration_ms, geometry: rule.geometry ?? null, threshold: rule.threshold ?? null, enabled: rule.enabled ?? true }) }),
   confirmEvent: (id: string) => request<EventItem>(`/api/v1/events/${id}/confirm`, { method: 'POST' }),
   ignoreEvent: (id: string) => request<EventItem>(`/api/v1/events/${id}/ignore`, { method: 'POST' }),
+  reviewEvent: (id: string, body: { status: EventItem['status']; reviewer?: string; note?: string; disposition?: string }) => request<EventItem>(`/api/v1/events/${id}/review`, { method: 'POST', body: JSON.stringify(body) }),
+  listReviews: (id: string) => request<EventReview[]>(`/api/v1/events/${id}/reviews`),
+  queryEvents: (params: string) => request<EventPage>(`/api/v1/events/query?${params}`),
+  exportEvents: (params: string) => `/api/v1/events/export.csv?${params}`,
+  reportEvent: (id: string) => `/api/v1/events/${id}/report.html`,
 };

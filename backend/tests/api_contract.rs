@@ -339,6 +339,26 @@ async fn event_can_be_confirmed_and_ignored() {
 }
 
 #[tokio::test]
+async fn event_query_export_and_report_endpoints_return_operational_outputs() {
+    let service = app();
+    let create = service.clone().oneshot(Request::post("/api/v1/videos").header("content-type", "application/json").body(Body::from(r#"{"filename":"operations.mp4","duration_ms":1000}"#)).unwrap()).await.unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let events_response = service.clone().oneshot(Request::get("/api/v1/events").body(Body::empty()).unwrap()).await.unwrap();
+    let events: serde_json::Value = serde_json::from_slice(&events_response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let id = events[0]["id"].as_str().unwrap();
+    let query = service.clone().oneshot(Request::get("/api/v1/events/query?status=unreviewed&page=1&page_size=1").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(query.status(), StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(&query.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(page["page_size"], 1);
+    assert!(page["total"].as_u64().unwrap() >= 1);
+    let csv = service.clone().oneshot(Request::get("/api/v1/events/export.csv?status=unreviewed").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(csv.status(), StatusCode::OK);
+    assert!(String::from_utf8(csv.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap().contains("event_type"));
+    let report = service.oneshot(Request::get(format!("/api/v1/events/{id}/report.html")).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(report.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn persisted_worker_event_can_be_confirmed_from_a_fresh_api_process() {
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");

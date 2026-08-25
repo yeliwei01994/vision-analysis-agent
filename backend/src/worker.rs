@@ -41,6 +41,8 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         event.confidence = candidate.confidence;
         event.rule_version = candidate.rule_version;
         event.detector_version = detector_version.clone();
+        event.zone_key = Some(event.event_type.clone());
+        event.association_key = Some(format!("{}:{}:{}", event.job_id, event.zone_key.as_deref().unwrap_or(""), event.rule_version));
         let selected_frames = select_evidence_frames(&candidate.frames, 5_000, 12);
         let evidence_frames = selected_frames
             .iter()

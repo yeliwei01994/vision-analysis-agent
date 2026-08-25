@@ -17,6 +17,9 @@ pub enum EventStatus {
     Unreviewed,
     Confirmed,
     Ignored,
+    Processing,
+    Resolved,
+    Closed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +98,20 @@ pub struct Event {
     pub rule_version: String,
     pub prompt_version: Option<String>,
     pub detector_version: String,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    #[serde(default)]
+    pub reviewed_at: Option<String>,
+    #[serde(default)]
+    pub review_note: Option<String>,
+    #[serde(default)]
+    pub disposition: Option<String>,
+    #[serde(default)]
+    pub zone_key: Option<String>,
+    #[serde(default)]
+    pub association_key: Option<String>,
+    #[serde(default)]
+    pub related_event_ids: Vec<Uuid>,
 }
 
 impl Event {
@@ -120,8 +137,27 @@ impl Event {
             rule_version: "rule-v1".into(),
             prompt_version: None,
             detector_version: "yolo-pending".into(),
+            reviewer: None,
+            reviewed_at: None,
+            review_note: None,
+            disposition: None,
+            zone_key: None,
+            association_key: None,
+            related_event_ids: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventReview {
+    pub id: Uuid,
+    pub event_id: Uuid,
+    pub old_status: EventStatus,
+    pub new_status: EventStatus,
+    pub reviewer: Option<String>,
+    pub note: Option<String>,
+    pub disposition: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -16,6 +16,6 @@ export function fallbackAnalysis(event: EventItem): AnalysisResult {
 }
 export function groupEvents(events: EventItem[]) {
   const groups = new Map<string, EventItem[]>();
-  for (const event of events) { const key = `${event.job_id}:${event.event_type}:${event.rule_version ?? 'rule-v1'}`; groups.set(key, [...(groups.get(key) ?? []), event]); }
+  for (const event of events) { const key = event.association_key ?? `${event.job_id}:${event.event_type}:${event.rule_version ?? 'rule-v1'}`; groups.set(key, [...(groups.get(key) ?? []), event]); }
   return [...groups.entries()].map(([key, items]) => ({ key, events: [...items].sort((a, b) => a.start_time_ms - b.start_time_ms) }));
 }

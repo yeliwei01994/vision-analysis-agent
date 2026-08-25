@@ -5,7 +5,7 @@ import { detectionSummary, displayEventType, fallbackAnalysis, groupEvents, prec
 import type { Detection, EventItem, EventRule, VideoJob } from './types/events';
 import './styles.css';
 
-const label = (status: EventItem['status']) => status === 'confirmed' ? '已确认' : status === 'ignored' ? '已忽略' : '待复核';
+const label = (status: EventItem['status']) => ({ unreviewed: '待复核', confirmed: '已确认', ignored: '已忽略', processing: '处理中', resolved: '已处置', closed: '已关闭' }[status]);
 const time = (ms: number) => `${Math.floor(ms / 60000).toString().padStart(2, '0')}:${Math.floor(ms / 1000 % 60).toString().padStart(2, '0')}`;
 const box = ([left, top, right, bottom]: Detection['bbox'], width: number, height: number) => {
   const legacyPixels = [left, top, right, bottom].some(value => value > 1);
@@ -21,6 +21,9 @@ export default function App() {
   const [jobs, setJobs] = useState<VideoJob[]>([]);
   const [job, setJob] = useState<VideoJob | null>(null);
   const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<EventItem['status'] | ''>('');
+  const [severityFilter, setSeverityFilter] = useState('');
+  const [page, setPage] = useState(1);
   const [activeNav, setActiveNav] = useState('事件检索');
   const [frameIndex, setFrameIndex] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -31,6 +34,11 @@ export default function App() {
   const [uploadName, setUploadName] = useState('');
   const [failedEvidenceUrls, setFailedEvidenceUrls] = useState<string[]>([]);
   const [evidenceSize, setEvidenceSize] = useState({ width: 1, height: 1 });
+  const [reviewDialog, setReviewDialog] = useState<EventItem['status'] | null>(null);
+  const [reviewer, setReviewer] = useState('');
+  const [reviewNote, setReviewNote] = useState('');
+  const [disposition, setDisposition] = useState('');
+  const [reviewHistory, setReviewHistory] = useState<import('./types/events').EventReview[]>([]);
 
   useEffect(() => {
     Promise.all([api.listEvents(), api.listRules(), api.listJobs()])
@@ -41,14 +49,14 @@ export default function App() {
   }, []);
 
   const groups = useMemo(
-    () => groupEvents(events.filter(event => !keyword || `${event.event_type} ${event.analysis?.summary ?? ''}`.includes(keyword))),
-    [events, keyword],
+    () => groupEvents(events.filter(event => (!keyword || `${event.event_type} ${event.analysis?.summary ?? ''}`.includes(keyword)) && (!statusFilter || event.status === statusFilter) && (!severityFilter || event.severity === severityFilter))).slice((page - 1) * 20, page * 20),
+    [events, keyword, statusFilter, severityFilter, page],
   );
   const frames = selected?.evidence.frames ?? [];
   const activeFrame = frames[frameIndex] ?? frames[0];
   const analysis = selected ? selected.analysis ?? fallbackAnalysis(selected) : null;
 
-  function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); }
+  async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
   async function refreshEvents() { const next = await api.listEvents(); setEvents(next); setSelected(next[0] ?? null); }
   async function waitForJob(id: string) {
     for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -73,11 +81,15 @@ export default function App() {
   async function review(action: 'confirm' | 'ignore') {
     if (!selected) return;
     setReviewing(true); setError(''); setFeedback('');
-    try {
-      const updated = action === 'confirm' ? await api.confirmEvent(selected.id) : await api.ignoreEvent(selected.id);
-      setEvents(items => items.map(item => item.id === updated.id ? updated : item));
-      setSelected(updated); setFeedback(action === 'confirm' ? '事件已确认' : '事件已忽略');
-    } catch (cause) { setError(cause instanceof Error ? cause.message : '事件状态更新失败'); }
+    try { const updated = action === 'confirm' ? await api.confirmEvent(selected.id) : await api.ignoreEvent(selected.id); setEvents(items => items.map(item => item.id === updated.id ? updated : item)); setSelected(updated); setFeedback(action === 'confirm' ? '事件已确认' : '事件已忽略'); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : '事件状态更新失败'); }
+    finally { setReviewing(false); }
+  }
+  async function submitReview() {
+    if (!selected || !reviewDialog) return;
+    setReviewing(true); setError('');
+    try { const updated = await api.reviewEvent(selected.id, { status: reviewDialog, reviewer: reviewer || undefined, note: reviewNote || undefined, disposition: disposition || undefined }); setEvents(items => items.map(item => item.id === updated.id ? updated : item)); setSelected(updated); setReviewHistory(await api.listReviews(updated.id)); setReviewDialog(null); setFeedback('审核已保存'); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : '审核保存失败'); }
     finally { setReviewing(false); }
   }
   async function remove() {
@@ -99,6 +111,10 @@ export default function App() {
       </header>
       {error && <div className="notice" role="alert">{error}</div>}
       {feedback && <div className="feedback" role="status">{feedback}</div>}
+      {activeNav === '事件检索' && <div className="event-filters"><select aria-label="状态筛选" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as EventItem['status'] | ''); setPage(1); }}><option value="">全部状态</option><option value="unreviewed">筛选：待复核</option><option value="confirmed">筛选：已确认</option><option value="ignored">筛选：已忽略</option><option value="processing">筛选：处理中</option><option value="resolved">筛选：已处置</option><option value="closed">筛选：已关闭</option></select><select aria-label="严重等级筛选" value={severityFilter} onChange={event => { setSeverityFilter(event.target.value); setPage(1); }}><option value="">全部等级</option><option value="high">筛选：高</option><option value="medium">筛选：中</option><option value="low">筛选：低</option></select><button onClick={() => { const params = new URLSearchParams(); if (statusFilter) params.set('status', statusFilter); if (severityFilter) params.set('severity', severityFilter); window.open(api.exportEvents(params.toString()), '_blank'); }}>导出 CSV</button><button disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} 页</span><button disabled={groups.length < 20} onClick={() => setPage(value => value + 1)}>下一页</button></div>}
+      {selected && activeNav === '事件检索' && <button className="report-link" onClick={() => window.open(api.reportEvent(selected.id), '_blank')}>打开当前事件报告</button>}
+      {selected && activeNav === '事件检索' && <span className="review-shortcuts"><button onClick={() => { setReviewDialog('confirmed'); setReviewer(''); setReviewNote(''); setDisposition(''); }}>带备注确认</button><button onClick={() => { setReviewDialog('ignored'); setReviewer(''); setReviewNote(''); setDisposition(''); }}>带备注忽略</button></span>}
+      {selected && reviewHistory.length > 0 && activeNav === '事件检索' && <div className="review-history"><strong>审核时间线</strong>{reviewHistory.map(item => <span key={item.id}>{item.created_at} · {label(item.old_status)} → {label(item.new_status)}{item.reviewer ? ` · ${item.reviewer}` : ''}{item.note ? ` · ${item.note}` : ''}</span>)}</div>}
       {activeNav === '事件检索' ? <>
         <section className="metrics">
           <div><span>今日事件</span><strong>{String(events.length).padStart(2, '0')}</strong><small>+12.4% vs 昨日</small></div>
@@ -128,6 +144,7 @@ export default function App() {
         </section>
       </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} onRefresh={async () => setJobs(await api.listJobs())} /> : activeNav === '规则配置' ? <RulesPage rules={rules} events={events} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
       {deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-event-title"><h3 id="delete-event-title">确认删除事件？</h3><p>事件“{deleting.event_type}”将被永久删除，原视频不会受到影响。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></div></div>}
+      {reviewDialog && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true"><h3>{reviewDialog === 'confirmed' ? '确认事件' : '忽略事件'}</h3><label>审核人<input value={reviewer} onChange={event => setReviewer(event.target.value)} placeholder="可选" /></label><label>处置结果<input value={disposition} onChange={event => setDisposition(event.target.value)} placeholder="例如：通知现场人员" /></label><label>备注<textarea value={reviewNote} onChange={event => setReviewNote(event.target.value)} placeholder="填写审核说明" /></label><div className="modal-actions"><button onClick={() => setReviewDialog(null)}>取消</button><button className="confirm" onClick={submitReview} disabled={reviewing}>{reviewing ? '保存中…' : '提交审核'}</button></div></div></div>}
     </main>
   </div>;
 }
