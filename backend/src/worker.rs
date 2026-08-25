@@ -224,7 +224,9 @@ async fn process_video(
         );
         model_version = Some(response.model_version.clone());
         let mut detected = response.into_frame_detections();
+        let frame_size = image::image_dimensions(frame_path).ok();
         for detection in &mut detected {
+            normalize_detection_bbox(&mut detection.detection, frame_size);
             detection.frame_path = Some(frame_path.clone());
         }
         frames.extend(detected);
@@ -234,6 +236,17 @@ async fn process_video(
         frames,
         model_version.unwrap_or_else(|| "yolo-no-detections".into()),
     ))
+}
+
+fn normalize_detection_bbox(detection: &mut Detection, frame_size: Option<(u32, u32)>) {
+    let Some((width, height)) = frame_size else { return; };
+    if !detection.bbox.iter().any(|value| *value > 1.0) { return; }
+    detection.bbox = [
+        detection.bbox[0] / width as f32,
+        detection.bbox[1] / height as f32,
+        detection.bbox[2] / width as f32,
+        detection.bbox[3] / height as f32,
+    ];
 }
 
 pub async fn run_loop(state: AppState, queue: crate::queue::TaskQueue) {
