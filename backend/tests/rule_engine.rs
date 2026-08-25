@@ -1,3 +1,4 @@
+use vision_event_api::application::AppState;
 use vision_event_api::domain::Detection;
 use vision_event_api::rules::{EventRule, FrameDetection, RuleEngine};
 
@@ -10,6 +11,7 @@ fn person(timestamp_ms: u64, confidence: f32, track_id: u64) -> FrameDetection {
             bbox: [0.0, 0.0, 10.0, 20.0],
             track_id: Some(track_id),
         },
+        frame_path: None,
     }
 }
 
@@ -32,4 +34,15 @@ fn creates_event_after_track_exceeds_minimum_duration() {
     assert_eq!(events[0].event_type, "person_stay");
     assert_eq!(events[0].start_time_ms, 0);
     assert_eq!(events[0].end_time_ms, 1_100);
+}
+
+#[test]
+fn worker_default_rule_accepts_detected_person_for_local_testing() {
+    let rule = AppState::default()
+        .event_rules()
+        .into_iter()
+        .find(|rule| rule.event_type == "person_stay")
+        .expect("default person_stay rule");
+    assert_eq!(rule.min_confidence, 0.25);
+    assert_eq!(rule.min_duration_ms, 0);
 }

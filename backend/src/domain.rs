@@ -62,10 +62,21 @@ impl Detection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvidenceFrame {
+    pub timestamp_ms: u64,
+    pub image_url: String,
+    #[serde(default)]
+    pub detections: Vec<Detection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Evidence {
     pub thumbnail_url: Option<String>,
     pub clip_url: Option<String>,
+    #[serde(default)]
     pub frame_urls: Vec<String>,
+    #[serde(default)]
+    pub frames: Vec<EvidenceFrame>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,7 +119,7 @@ impl Event {
             analysis: None,
             rule_version: "rule-v1".into(),
             prompt_version: None,
-            detector_version: "mock-detector-v1".into(),
+            detector_version: "yolo-pending".into(),
         }
     }
 }

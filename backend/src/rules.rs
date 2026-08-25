@@ -1,10 +1,12 @@
 use crate::domain::Detection;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct FrameDetection {
     pub timestamp_ms: u64,
     pub detection: Detection,
+    pub frame_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -40,6 +42,7 @@ pub struct RuleEvent {
     pub end_time_ms: u64,
     pub confidence: f32,
     pub objects: Vec<Detection>,
+    pub frames: Vec<FrameDetection>,
     pub rule_version: String,
 }
 
@@ -82,6 +85,7 @@ impl RuleEngine {
                     end_time_ms: end,
                     confidence,
                     objects: track.iter().map(|frame| frame.detection.clone()).collect(),
+                    frames: track.iter().map(|frame| (*frame).clone()).collect(),
                     rule_version: self.rule.version.clone(),
                 })
             })

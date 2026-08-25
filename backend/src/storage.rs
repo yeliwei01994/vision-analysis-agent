@@ -1,4 +1,7 @@
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
+
+use crate::domain::{Detection, Evidence, EvidenceFrame};
 
 #[derive(Clone)]
 pub struct MediaStorage {
@@ -25,6 +28,28 @@ impl MediaStorage {
         let path = self.root.join(safe_name);
         tokio::fs::write(&path, bytes).await?;
         Ok(path)
+    }
+
+    pub async fn save_event_evidence(
+        &self,
+        event_id: Uuid,
+        frames: &[(u64, &Path, Vec<Detection>)],
+    ) -> std::io::Result<Evidence> {
+        let directory = self.root.join("evidence").join(event_id.to_string());
+        tokio::fs::create_dir_all(&directory).await?;
+        let mut evidence_frames = Vec::with_capacity(frames.len());
+        for (index, (timestamp_ms, source, detections)) in frames.iter().enumerate() {
+            let filename = format!("frame-{index:04}-{timestamp_ms}.jpg");
+            tokio::fs::copy(source, directory.join(&filename)).await?;
+            evidence_frames.push(EvidenceFrame {
+                timestamp_ms: *timestamp_ms,
+                image_url: format!("/media/evidence/{event_id}/{filename}"),
+                detections: detections.clone(),
+            });
+        }
+        let frame_urls = evidence_frames.iter().map(|frame| frame.image_url.clone()).collect();
+        let thumbnail_url = evidence_frames.first().map(|frame| frame.image_url.clone());
+        Ok(Evidence { thumbnail_url, clip_url: None, frame_urls, frames: evidence_frames })
     }
 }
 
