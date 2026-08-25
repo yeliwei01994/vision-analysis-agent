@@ -5,11 +5,12 @@ import App from './App';
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 const { event, apiMock } = vi.hoisted(() => {
-  const event = { id: 'event-1', job_id: 'job-1', event_type: 'person_enter_zone', start_time_ms: 1000, end_time_ms: 12000, severity: 'high', status: 'unreviewed', confidence: 0.91, objects: [{ class_name: 'person', confidence: 0.94, bbox: [10, 20, 80, 160], track_id: 1 }], evidence: { frame_urls: [] }, analysis: { summary: '人员进入受限区域并持续停留', severity: 'high', suggestion: '请人工确认是否为授权人员', report_source: 'mock' } };
+  const event = { id: 'event-1', job_id: 'job-1', event_type: 'person_enter_zone', start_time_ms: 1000, end_time_ms: 12000, severity: 'high', status: 'unreviewed', confidence: 0.91, objects: [{ class_name: 'person', confidence: 0.94, bbox: [10, 20, 80, 160], track_id: 1 }], evidence: { frame_urls: [] }, analysis: { summary: '人员进入受限区域并持续停留', severity: 'high', suggestion: '请人工确认是否为授权人员', report_source: 'mock' }, detector_version: 'yolov8n' };
   const apiMock = {
     listEvents: vi.fn().mockResolvedValue([event]),
     listRules: vi.fn().mockResolvedValue([]),
-    createVideo: vi.fn(), uploadVideo: vi.fn(), processVideo: vi.fn(), getJob: vi.fn(),
+    listJobs: vi.fn().mockResolvedValue([]),
+    createVideo: vi.fn(), uploadVideo: vi.fn(), processVideo: vi.fn(), getJob: vi.fn(), updateJob: vi.fn(), deleteJob: vi.fn(), deleteEvent: vi.fn(),
     confirmEvent: vi.fn().mockResolvedValue({ ...event, status: 'confirmed' }),
     ignoreEvent: vi.fn().mockResolvedValue({ ...event, status: 'ignored' }),
   };
@@ -24,6 +25,20 @@ test('shows empty event state when no events exist', async () => {
   expect(await screen.findByText('暂无匹配事件')).toBeInTheDocument();
 });
 
+test('shows real evidence frames and lets the reviewer select a timeline point', async () => {
+  const evidenced = { ...event, event_type: 'person_stay', rule_version: 'rule-v1', analysis: null, evidence: { frame_urls: ['/media/evidence/event-1/frame-1.jpg', '/media/evidence/event-1/frame-2.jpg'], frames: [
+    { timestamp_ms: 0, image_url: '/media/evidence/event-1/frame-1.jpg', detections: event.objects },
+    { timestamp_ms: 500, image_url: '/media/evidence/event-1/frame-2.jpg', detections: event.objects },
+  ] } };
+  apiMock.listEvents.mockResolvedValueOnce([evidenced]);
+  render(<App />);
+
+  expect((await screen.findAllByText('人员停留')).length).toBeGreaterThan(0);
+  expect((await screen.findAllByText('人员 1 次检测 · 平均置信度 94%')).length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole('button', { name: '证据帧 00:00.5' }));
+  expect(screen.getByRole('img', { name: '00:00.5 的检测证据' })).toHaveAttribute('src', '/media/evidence/event-1/frame-2.jpg');
+});
+
 test('confirming an event calls the review API and updates its status', async () => {
   apiMock.listEvents.mockResolvedValueOnce([event]);
   render(<App />);
@@ -33,6 +48,9 @@ test('confirming an event calls the review API and updates its status', async ()
 
   await waitFor(() => expect(apiMock.confirmEvent).toHaveBeenCalledWith('event-1'));
   expect(await screen.findByText('已确认')).toBeInTheDocument();
+  expect(screen.getByText('检测摘要')).toBeInTheDocument();
+  expect(screen.getByText('人员 1 次检测 · 平均置信度 94%')).toBeInTheDocument();
+  expect(screen.getByText(/检测器：yolov8n/)).toBeInTheDocument();
 });
 
 test('ignoring an event calls the review API and updates its status', async () => {
@@ -44,4 +62,54 @@ test('ignoring an event calls the review API and updates its status', async () =
 
   await waitFor(() => expect(apiMock.ignoreEvent).toHaveBeenCalledWith('event-1'));
   expect((await screen.findAllByText('已忽略')).length).toBeGreaterThan(0);
+});
+
+test('deleting an event removes it from the event stream after confirmation', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([event]);
+  apiMock.deleteEvent.mockResolvedValueOnce(undefined);
+  render(<App />);
+  await screen.findAllByText('person_enter_zone');
+
+  fireEvent.click(screen.getByRole('button', { name: '删除事件 person_enter_zone' }));
+  expect(screen.getByRole('dialog', { name: '确认删除事件？' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+
+  await waitFor(() => expect(apiMock.deleteEvent).toHaveBeenCalledWith('event-1'));
+  expect(await screen.findByText('暂无匹配事件')).toBeInTheDocument();
+});
+
+test('navigation opens the video tasks, rules, and model pages', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  render(<App />);
+
+  fireEvent.click(screen.getByRole('button', { name: '视频任务' }));
+  expect(await screen.findByRole('heading', { name: '视频任务' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: '规则配置' }));
+  expect(await screen.findByRole('heading', { name: '规则配置' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: '模型版本' }));
+  expect(await screen.findByRole('heading', { name: '模型版本' })).toBeInTheDocument();
+});
+
+test('can rename and delete a completed video job', async () => {
+  const job = { id: 'job-1', filename: 'before.mp4', duration_ms: 1000, status: 'completed', progress: 100, source_uri: null };
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.listJobs.mockResolvedValueOnce([job]);
+  apiMock.listJobs.mockResolvedValueOnce([{ ...job, filename: 'after.mp4' }]);
+  apiMock.updateJob.mockResolvedValueOnce({ ...job, filename: 'after.mp4' });
+  apiMock.deleteJob.mockResolvedValueOnce(undefined);
+  render(<App />);
+
+  fireEvent.click(screen.getByRole('button', { name: '视频任务' }));
+  expect(await screen.findByText('before.mp4')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '编辑 before.mp4' }));
+  const input = screen.getByRole('textbox', { name: '任务文件名' });
+  fireEvent.change(input, { target: { value: 'after.mp4' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  await waitFor(() => expect(apiMock.updateJob).toHaveBeenCalledWith('job-1', 'after.mp4'));
+
+  fireEvent.click(screen.getByRole('button', { name: '删除 after.mp4' }));
+  fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(apiMock.deleteJob).toHaveBeenCalledWith('job-1'));
 });
