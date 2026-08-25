@@ -59,7 +59,7 @@ fn zoned_person(timestamp_ms: u64, confidence: f32) -> FrameDetection {
         detection: Detection {
             class_name: "person".into(),
             confidence,
-            bbox: [0.2, 0.2, 0.2, 0.2],
+            bbox: [0.2, 0.2, 0.4, 0.4],
             track_id: Some(1),
         },
         frame_path: None,
@@ -79,6 +79,14 @@ fn intrusion_requires_detection_inside_the_zone() {
     let events = RuleEngine::new(zone_rule("person_enter_zone"))
         .evaluate(&[zoned_person(0, 0.9)]);
     assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn intrusion_ignores_detection_outside_the_zone() {
+    let mut outside = zoned_person(0, 0.9);
+    outside.detection.bbox = [0.0, 0.0, 0.05, 0.05];
+    let events = RuleEngine::new(zone_rule("person_enter_zone")).evaluate(&[outside]);
+    assert!(events.is_empty());
 }
 
 #[test]

@@ -131,7 +131,8 @@ impl RuleEngine {
 }
 
 fn bottom_center(detection: &Detection) -> [f32; 2] {
-    [detection.bbox[0] + detection.bbox[2] / 2.0, detection.bbox[1] + detection.bbox[3]]
+    // YOLO returns normalized [left, top, right, bottom] coordinates.
+    [(detection.bbox[0] + detection.bbox[2]) / 2.0, detection.bbox[3]]
 }
 
 pub fn point_in_polygon(point: [f32; 2], polygon: &[[f32; 2]]) -> bool {
