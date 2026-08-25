@@ -30,7 +30,7 @@ export const api = {
   listEvents: () => request<EventItem[]>('/api/v1/events'),
   searchEvents: (keyword: string) => request<EventItem[]>('/api/v1/events/search', { method: 'POST', body: JSON.stringify({ keyword }) }),
   listRules: () => request<EventRule[]>('/api/v1/event-rules'),
-  updateRule: (rule: EventRule) => request<EventRule>(`/api/v1/event-rules/${rule.event_type}`, { method: 'PUT', body: JSON.stringify({ class_name: rule.class_name, min_confidence: rule.min_confidence, min_duration_ms: rule.min_duration_ms }) }),
+  updateRule: (rule: EventRule) => request<EventRule>(`/api/v1/event-rules/${rule.event_type}`, { method: 'PUT', body: JSON.stringify({ class_name: rule.class_name, min_confidence: rule.min_confidence, min_duration_ms: rule.min_duration_ms, geometry: rule.geometry ?? null, threshold: rule.threshold ?? null, enabled: rule.enabled ?? true }) }),
   confirmEvent: (id: string) => request<EventItem>(`/api/v1/events/${id}/confirm`, { method: 'POST' }),
   ignoreEvent: (id: string) => request<EventItem>(`/api/v1/events/${id}/ignore`, { method: 'POST' }),
 };

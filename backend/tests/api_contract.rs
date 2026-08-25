@@ -262,7 +262,7 @@ async fn event_rules_can_be_listed_and_updated() {
             Request::put("/api/v1/event-rules/person_stay")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"class_name":"person","min_confidence":0.75,"min_duration_ms":2000}"#,
+                    r#"{"class_name":"person","min_confidence":0.75,"min_duration_ms":2000,"geometry":{"kind":"polygon","points":[[0.1,0.1],[0.9,0.1],[0.9,0.9]]},"threshold":2,"enabled":false}"#,
                 ))
                 .unwrap(),
         )
@@ -272,6 +272,9 @@ async fn event_rules_can_be_listed_and_updated() {
     let updated: serde_json::Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(updated["min_duration_ms"], 2000);
+    assert_eq!(updated["geometry"]["kind"], "polygon");
+    assert_eq!(updated["threshold"], 2);
+    assert_eq!(updated["enabled"], false);
 }
 
 #[tokio::test]

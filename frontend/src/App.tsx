@@ -120,7 +120,7 @@ export default function App() {
             <div className="actions"><button className="confirm" onClick={() => review('confirm')} disabled={reviewing || selected.status === 'confirmed'}>{reviewing ? '保存中…' : '确认事件'}</button><button onClick={() => review('ignore')} disabled={reviewing || selected.status === 'ignored'}>{selected.status === 'ignored' ? '已忽略' : '忽略'}</button><button className="danger-button" aria-label={`删除事件 ${selected.event_type}`} onClick={() => setDeleting(selected)}>删除事件</button></div>
           </> : <div className="empty detail-empty">选择一个事件查看证据与分析</div>}</div>
         </section>
-      </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} onRefresh={async () => setJobs(await api.listJobs())} /> : activeNav === '规则配置' ? <RulesPage rules={rules} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
+      </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} onRefresh={async () => setJobs(await api.listJobs())} /> : activeNav === '规则配置' ? <RulesPage rules={rules} events={events} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
       {deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-event-title"><h3 id="delete-event-title">确认删除事件？</h3><p>事件“{deleting.event_type}”将被永久删除，原视频不会受到影响。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></div></div>}
     </main>
   </div>;

@@ -1,0 +1,4 @@
+ALTER TABLE event_rules
+  ADD COLUMN geometry_json JSON NULL,
+  ADD COLUMN threshold_value INT UNSIGNED NULL,
+  ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT TRUE;

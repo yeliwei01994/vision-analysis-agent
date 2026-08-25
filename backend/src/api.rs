@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     application::AppState,
     domain::{Event, EventStatus, VideoJob},
-    rules::EventRule,
+    rules::{EventRule, Geometry},
 };
 
 #[derive(Debug, Deserialize)]
@@ -31,7 +31,13 @@ pub struct UpdateRuleRequest {
     pub class_name: String,
     pub min_confidence: f32,
     pub min_duration_ms: u64,
+    pub geometry: Option<Geometry>,
+    pub threshold: Option<u32>,
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
 }
+
+fn default_rule_enabled() -> bool { true }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -276,13 +282,26 @@ async fn update_rule(
     if !(0.0..=1.0).contains(&input.min_confidence) {
         return Err(ApiError::BadRequest);
     }
-    let rule = EventRule::new(
+    if input.geometry.as_ref().is_some_and(|geometry| geometry.kind != "polygon" || geometry.points.len() < 3 || geometry.points.iter().flatten().any(|value| !(0.0..=1.0).contains(value))) {
+        return Err(ApiError::BadRequest);
+    }
+    if event_type == "person_count_limit" && input.threshold.unwrap_or(0) == 0 {
+        return Err(ApiError::BadRequest);
+    }
+    let mut rule = EventRule::new(
         event_type.clone(),
         input.class_name,
         input.min_confidence,
         input.min_duration_ms,
     );
-    Ok(Json(state.update_rule(event_type, rule)))
+    rule.geometry = input.geometry;
+    rule.threshold = input.threshold;
+    rule.enabled = input.enabled;
+    let updated = state.update_rule(event_type, rule);
+    if let Some(database) = &state.database {
+        database.save_rule(&updated).await.map_err(|_| ApiError::Internal)?;
+    }
+    Ok(Json(updated))
 }
 async fn get_event(
     State(state): State<AppState>,

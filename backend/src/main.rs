@@ -31,7 +31,13 @@ async fn main() {
         Ok(url) => TaskQueue::new(&url, "vision:jobs").ok(),
         Err(_) => None,
     };
-    let state = AppState::default().with_integrations(database, queue.clone());
+    let state = AppState::default().with_integrations(database.clone(), queue.clone());
+    if let Some(database) = &database {
+        match database.list_rules().await {
+            Ok(rules) => for rule in rules { state.update_rule(rule.event_type.clone(), rule); },
+            Err(error) => eprintln!("failed to load event rules from MySQL: {error}"),
+        }
+    }
     if std::env::var("WORKER_MODE").ok().as_deref() == Some("1") {
         if let Some(queue) = queue {
             vision_event_api::worker::run_loop(state, queue).await;

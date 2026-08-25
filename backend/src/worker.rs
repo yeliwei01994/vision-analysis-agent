@@ -1,7 +1,7 @@
 use crate::{
     application::AppState,
     domain::{Detection, Event, Evidence, JobStatus},
-    rules::{EventRule, RuleEngine},
+    rules::RuleEngine,
     video,
     yolo::YoloDetector,
 };
@@ -28,13 +28,8 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         None => (None, Vec::new(), "no-video-source".to_string()),
     };
     state.update_job(job_id, JobStatus::Processing, 75);
-    let rule = state
-        .rules
-        .read()
-        .expect("rules lock poisoned")
-        .get("person_stay")
-        .cloned()
-        .unwrap_or_else(|| EventRule::new("person_stay", "person", 0.25, 0));
+    let rules = state.event_rules();
+    for rule in rules.into_iter().filter(|rule| rule.enabled) {
     for candidate in merge_rule_events(RuleEngine::new(rule).evaluate(&frames), 3_000) {
         let mut event = Event::new(
             job_id,
@@ -70,6 +65,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
                 eprintln!("failed to save event {} for job {job_id}: {error}", event.id);
             }
         }
+    }
     }
     if let Some(directory) = frame_directory {
         let _ = tokio::fs::remove_dir_all(directory).await;

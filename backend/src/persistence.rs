@@ -1,4 +1,4 @@
-use crate::domain::{Event, EventStatus, JobStatus, VideoJob};
+use crate::{domain::{Event, EventStatus, JobStatus, VideoJob}, rules::EventRule};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool, Row};
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -172,6 +172,27 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_rules(&self) -> Result<Vec<EventRule>, sqlx::Error> {
+        let rows = sqlx::query("SELECT event_type, class_name, min_confidence, min_duration_ms, version, geometry_json, threshold_value, enabled FROM event_rules")
+            .fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().filter_map(|row| Some(EventRule {
+            event_type: row.try_get("event_type").ok()?,
+            class_name: row.try_get("class_name").ok()?,
+            min_confidence: row.try_get("min_confidence").ok()?,
+            min_duration_ms: row.try_get::<u64, _>("min_duration_ms").ok()?,
+            version: row.try_get("version").ok()?,
+            geometry: row.try_get::<Option<Json<_>>, _>("geometry_json").ok()?.map(|value| value.0),
+            threshold: row.try_get("threshold_value").ok()?,
+            enabled: row.try_get("enabled").ok()?,
+        })).collect())
+    }
+
+    pub async fn save_rule(&self, rule: &EventRule) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO event_rules (event_type, class_name, min_confidence, min_duration_ms, version, geometry_json, threshold_value, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE class_name=VALUES(class_name), min_confidence=VALUES(min_confidence), min_duration_ms=VALUES(min_duration_ms), version=VALUES(version), geometry_json=VALUES(geometry_json), threshold_value=VALUES(threshold_value), enabled=VALUES(enabled)")
+            .bind(&rule.event_type).bind(&rule.class_name).bind(rule.min_confidence).bind(rule.min_duration_ms as i64).bind(&rule.version).bind(rule.geometry.as_ref().map(Json)).bind(rule.threshold).bind(rule.enabled).execute(&self.pool).await?;
+        Ok(())
     }
 }
 

@@ -6,4 +6,5 @@ export interface Evidence { thumbnail_url?: string | null; clip_url?: string | n
 export interface AnalysisResult { summary: string; severity: string; suggestion: string; report_source: string; }
 export interface EventItem { id: string; job_id: string; event_type: string; start_time_ms: number; end_time_ms: number; severity: string; status: EventStatus; confidence: number; objects: Detection[]; evidence: Evidence; analysis?: AnalysisResult | null; rule_version?: string; detector_version: string; }
 export interface VideoJob { id: string; filename: string; duration_ms: number; status: string; progress: number; source_uri?: string | null; }
-export interface EventRule { event_type: string; class_name: string; min_confidence: number; min_duration_ms: number; version: string; }
+export interface RuleGeometry { kind: 'polygon'; points: [number, number][]; }
+export interface EventRule { event_type: string; class_name: string; min_confidence: number; min_duration_ms: number; version: string; geometry?: RuleGeometry | null; threshold?: number | null; enabled?: boolean; }
