@@ -5,6 +5,7 @@ use crate::{
     video,
     yolo::YoloDetector,
 };
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
@@ -34,7 +35,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         .get("person_stay")
         .cloned()
         .unwrap_or_else(|| EventRule::new("person_stay", "person", 0.25, 0));
-    for candidate in RuleEngine::new(rule).evaluate(&frames) {
+    for candidate in merge_rule_events(RuleEngine::new(rule).evaluate(&frames), 3_000) {
         let mut event = Event::new(
             job_id,
             candidate.event_type,
@@ -45,18 +46,11 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         event.confidence = candidate.confidence;
         event.rule_version = candidate.rule_version;
         event.detector_version = detector_version.clone();
-        let mut evidence_frames = Vec::new();
-        for frame in &candidate.frames {
-            let Some(path) = frame.frame_path.as_deref() else { continue; };
-            if let Some((_, _, detections)) = evidence_frames
-                .iter_mut()
-                .find(|(timestamp, existing_path, _): &&mut (u64, &std::path::Path, Vec<Detection>)| *timestamp == frame.timestamp_ms && *existing_path == path)
-            {
-                detections.push(frame.detection.clone());
-            } else {
-                evidence_frames.push((frame.timestamp_ms, path, vec![frame.detection.clone()]));
-            }
-        }
+        let selected_frames = select_evidence_frames(&candidate.frames, 5_000, 12);
+        let evidence_frames = selected_frames
+            .iter()
+            .map(|(timestamp_ms, path, detections)| (*timestamp_ms, path.as_path(), detections.clone()))
+            .collect::<Vec<_>>();
         if !evidence_frames.is_empty() {
             event.evidence = match state.storage.save_event_evidence(event.id, &evidence_frames).await {
                 Ok(evidence) => evidence,
@@ -89,6 +83,104 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         }
     }
     true
+}
+
+pub fn merge_rule_events(mut candidates: Vec<crate::rules::RuleEvent>, gap_ms: u64) -> Vec<crate::rules::RuleEvent> {
+    candidates.sort_by_key(|candidate| candidate.start_time_ms);
+    let mut merged: Vec<crate::rules::RuleEvent> = Vec::new();
+    for candidate in candidates {
+        let active = merged.iter_mut().rev().find(|active| {
+            active.event_type == candidate.event_type
+                && active.rule_version == candidate.rule_version
+                && primary_class(active) == primary_class(&candidate)
+                && candidate.start_time_ms.saturating_sub(active.end_time_ms) <= gap_ms
+        });
+        if let Some(active) = active {
+            combine_rule_events(active, candidate);
+        } else {
+            merged.push(candidate);
+        }
+    }
+    merged.sort_by_key(|candidate| candidate.start_time_ms);
+    merged
+}
+
+fn primary_class(event: &crate::rules::RuleEvent) -> Option<&str> {
+    event.objects.first().map(|detection| detection.class_name.as_str())
+}
+
+fn combine_rule_events(active: &mut crate::rules::RuleEvent, candidate: crate::rules::RuleEvent) {
+    let active_count = active.objects.len();
+    let candidate_count = candidate.objects.len();
+    let total_count = active_count + candidate_count;
+    if total_count > 0 {
+        active.confidence = (active.confidence * active_count as f32
+            + candidate.confidence * candidate_count as f32)
+            / total_count as f32;
+    }
+    active.start_time_ms = active.start_time_ms.min(candidate.start_time_ms);
+    active.end_time_ms = active.end_time_ms.max(candidate.end_time_ms);
+    active.objects.extend(candidate.objects);
+    active.frames.extend(candidate.frames);
+    active.frames.sort_by_key(|frame| frame.timestamp_ms);
+}
+
+pub fn select_evidence_frames(
+    frames: &[crate::rules::FrameDetection],
+    sample_interval_ms: u64,
+    max_frames: usize,
+) -> Vec<(u64, PathBuf, Vec<Detection>)> {
+    if max_frames == 0 {
+        return Vec::new();
+    }
+    let mut sources: Vec<(u64, PathBuf, Vec<Detection>)> = Vec::new();
+    for frame in frames {
+        let Some(path) = frame.frame_path.as_ref() else { continue; };
+        if let Some((_, _, detections)) = sources.iter_mut().find(|(timestamp, existing_path, _)| {
+            *timestamp == frame.timestamp_ms && *existing_path == *path
+        }) {
+            detections.push(frame.detection.clone());
+        } else {
+            sources.push((frame.timestamp_ms, path.clone(), vec![frame.detection.clone()]));
+        }
+    }
+    sources.sort_by_key(|(timestamp_ms, _, _)| *timestamp_ms);
+    if sources.is_empty() {
+        return sources;
+    }
+
+    let peak_index = sources
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| {
+            let left_confidence = left.2.iter().map(|detection| detection.confidence).fold(0.0, f32::max);
+            let right_confidence = right.2.iter().map(|detection| detection.confidence).fold(0.0, f32::max);
+            left_confidence.total_cmp(&right_confidence)
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+
+    let mut selected = vec![0, peak_index, sources.len() - 1];
+    let mut last_sampled_at = sources[0].0;
+    for (index, (timestamp_ms, _, _)) in sources.iter().enumerate().skip(1) {
+        if timestamp_ms.saturating_sub(last_sampled_at) >= sample_interval_ms {
+            selected.push(index);
+            last_sampled_at = *timestamp_ms;
+        }
+    }
+    selected.sort_unstable();
+    selected.dedup();
+
+    let mandatory = [0, peak_index, sources.len() - 1];
+    let mut kept = mandatory.into_iter().collect::<Vec<_>>();
+    kept.sort_unstable();
+    kept.dedup();
+    for index in selected {
+        if kept.len() >= max_frames { break; }
+        if !kept.contains(&index) { kept.push(index); }
+    }
+    kept.sort_unstable();
+    kept.into_iter().take(max_frames).map(|index| sources[index].clone()).collect()
 }
 
 async fn persist_job_state(state: &AppState, job_id: Uuid, reason: &str) {

@@ -24,6 +24,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
   const [uploadName, setUploadName] = useState('');
+  const [failedEvidenceUrls, setFailedEvidenceUrls] = useState<string[]>([]);
 
   useEffect(() => {
     Promise.all([api.listEvents(), api.listRules(), api.listJobs()])
@@ -41,7 +42,7 @@ export default function App() {
   const activeFrame = frames[frameIndex] ?? frames[0];
   const analysis = selected ? selected.analysis ?? fallbackAnalysis(selected) : null;
 
-  function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setFeedback(''); }
+  function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setFeedback(''); setFailedEvidenceUrls([]); }
   async function refreshEvents() { const next = await api.listEvents(); setEvents(next); setSelected(next[0] ?? null); }
   async function waitForJob(id: string) {
     for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -113,7 +114,7 @@ export default function App() {
           </div>
           <div className="detail-column">{selected ? <>
             <div className="detail-top"><div><p className="eyebrow">EVENT DETAIL / {selected.id}</p><h2>事件详情</h2></div><span className="status">{label(selected.status)}</span></div>
-            <div className="evidence">{activeFrame ? <><div className="evidence-stage"><img src={activeFrame.image_url} alt={`${preciseTime(activeFrame.timestamp_ms)} 的检测证据`} />{activeFrame.detections.map((detection, index) => <span className="detection-box" key={index} style={box(detection.bbox)}>{detection.class_name} {(detection.confidence * 100).toFixed(0)}%</span>)}</div><div className="timeline">{frames.map((item, index) => <button key={item.image_url} aria-label={`证据帧 ${preciseTime(item.timestamp_ms)}`} aria-pressed={index === frameIndex} onClick={() => setFrameIndex(index)}>{preciseTime(item.timestamp_ms)}</button>)}</div></> : <div className="evidence-empty">暂无可用抽帧证据</div>}</div>
+            <div className="evidence">{activeFrame ? <><div className="evidence-stage">{failedEvidenceUrls.includes(activeFrame.image_url) ? <div className="evidence-unavailable"><strong>证据文件不可用</strong><button aria-label="重新加载证据图片" onClick={() => setFailedEvidenceUrls(urls => urls.filter(url => url !== activeFrame.image_url))}>重新加载</button></div> : <><img src={activeFrame.image_url} alt={`${preciseTime(activeFrame.timestamp_ms)} 的检测证据`} onError={() => setFailedEvidenceUrls(urls => urls.includes(activeFrame.image_url) ? urls : [...urls, activeFrame.image_url])} />{activeFrame.detections.map((detection, index) => <span className="detection-box" key={index} style={box(detection.bbox)}>{detection.class_name} {(detection.confidence * 100).toFixed(0)}%</span>)}</>}</div><div className="timeline">{frames.map((item, index) => <button key={item.image_url} aria-label={`证据帧 ${preciseTime(item.timestamp_ms)}`} aria-pressed={index === frameIndex} onClick={() => { setFrameIndex(index); setFailedEvidenceUrls([]); }}>{preciseTime(item.timestamp_ms)}</button>)}</div></> : <div className="evidence-empty">暂无可用抽帧证据</div>}</div>
             <div className="detail-info"><div><span>事件类型</span><strong>{displayEventType(selected.event_type)}</strong><small>{selected.event_type} · {selected.rule_version ?? 'rule-v1'}</small></div><div><span>严重等级</span><strong className="danger">{selected.severity.toUpperCase()}</strong></div><div><span>检测摘要</span><strong>{detectionSummary(selected)}</strong></div><div><span>模型置信度</span><strong>{(selected.confidence * 100).toFixed(1)}%</strong></div></div>
             <div className="analysis"><p className="eyebrow">MODEL ANALYSIS</p><h3>{analysis?.summary}</h3><p>{analysis?.suggestion}</p><small>来源：{analysis?.report_source} · 检测器：{selected.detector_version}</small></div>
             <div className="actions"><button className="confirm" onClick={() => review('confirm')} disabled={reviewing || selected.status === 'confirmed'}>{reviewing ? '保存中…' : '确认事件'}</button><button onClick={() => review('ignore')} disabled={reviewing || selected.status === 'ignored'}>{selected.status === 'ignored' ? '已忽略' : '忽略'}</button><button className="danger-button" aria-label={`删除事件 ${selected.event_type}`} onClick={() => setDeleting(selected)}>删除事件</button></div>
@@ -124,4 +125,3 @@ export default function App() {
     </main>
   </div>;
 }
-

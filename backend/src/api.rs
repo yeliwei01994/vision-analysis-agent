@@ -1,6 +1,6 @@
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, State},
-    http::{header::CONTENT_TYPE, StatusCode},
+    http::{header::{CACHE_CONTROL, CONTENT_TYPE}, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Json, Router,
@@ -67,7 +67,7 @@ async fn get_media(
     let bytes = tokio::fs::read(state.storage.root().join(relative))
         .await
         .map_err(|_| ApiError::NotFound)?;
-    Ok(([(CONTENT_TYPE, "image/jpeg")], bytes).into_response())
+    Ok(([(CONTENT_TYPE, "image/jpeg"), (CACHE_CONTROL, "private, max-age=3600")], bytes).into_response())
 }
 
 fn safe_media_path(value: &str) -> Option<PathBuf> {
@@ -326,6 +326,9 @@ async fn delete_event(
         return Err(ApiError::NotFound);
     }
     state.events.write().expect("events lock poisoned").remove(&id);
+    if let Err(error) = state.storage.delete_event_evidence(id).await {
+        eprintln!("failed to delete evidence for event {id}: {error}");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

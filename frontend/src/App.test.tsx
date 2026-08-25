@@ -59,6 +59,19 @@ test('shows real evidence frames and lets the reviewer select a timeline point',
   expect(screen.getByRole('img', { name: '00:00.5 的检测证据' })).toHaveAttribute('src', '/media/evidence/event-1/frame-2.jpg');
 });
 
+test('shows a retry control when an evidence image cannot be loaded', async () => {
+  const evidenced = { ...event, evidence: { frame_urls: ['/media/evidence/event-1/frame-1.jpg'], frames: [
+    { timestamp_ms: 0, image_url: '/media/evidence/event-1/frame-1.jpg', detections: event.objects },
+  ] } };
+  apiMock.listEvents.mockResolvedValueOnce([evidenced]);
+  render(<App />);
+
+  fireEvent.error(await screen.findByRole('img', { name: '00:00.0 的检测证据' }));
+  expect(await screen.findByText('证据文件不可用')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '重新加载证据图片' }));
+  expect(screen.getByRole('img', { name: '00:00.0 的检测证据' })).toBeInTheDocument();
+});
+
 test('confirming an event calls the review API and updates its status', async () => {
   apiMock.listEvents.mockResolvedValueOnce([event]);
   render(<App />);

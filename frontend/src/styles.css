@@ -131,6 +131,8 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 .timeline button[aria-pressed="true"] { color: #08120f; border-color: #56e0bb; background: #56e0bb; }
 .timeline button:focus-visible, .event-card:focus-visible { outline: 2px solid #56e0bb; outline-offset: 2px; }
 .evidence-empty { display: grid; min-height: 210px; place-items: center; color: #607687; border: 1px dashed #2b3e4d; background: #0c141c; font-size: 12px; }
+.evidence-unavailable { display: grid; min-height: 100%; place-content: center; gap: 12px; color: #9cb2c7; text-align: center; }
+.evidence-unavailable button { padding: 8px 12px; border: 1px solid #2ed2b5; background: transparent; color: #56e6cd; cursor: pointer; }
 .status { transition: color 160ms ease, background-color 160ms ease, transform 160ms ease; }
 .actions button { transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease; }
 @media (prefers-reduced-motion: reduce) { .feedback, .status, .actions button { transition: none; } }

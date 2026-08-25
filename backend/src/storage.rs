@@ -51,6 +51,14 @@ impl MediaStorage {
         let thumbnail_url = evidence_frames.first().map(|frame| frame.image_url.clone());
         Ok(Evidence { thumbnail_url, clip_url: None, frame_urls, frames: evidence_frames })
     }
+
+    pub async fn delete_event_evidence(&self, event_id: Uuid) -> std::io::Result<()> {
+        match tokio::fs::remove_dir_all(self.root.join("evidence").join(event_id.to_string())).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 pub fn sanitize_filename(filename: &str) -> String {

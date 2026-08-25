@@ -1,14 +1,86 @@
 use std::env;
+use std::path::PathBuf;
 
 use sqlx::Row;
 use vision_event_api::{
     application::AppState,
     domain::{Detection, JobStatus},
     persistence::{Database, DatabaseConfig},
+    rules::{FrameDetection, RuleEvent},
     storage::MediaStorage,
     worker,
 };
 use uuid::Uuid;
+
+fn candidate(start_time_ms: u64, end_time_ms: u64, confidence: f32) -> RuleEvent {
+    let detection = Detection::new("person".into(), confidence, [10.0, 20.0, 30.0, 40.0]);
+    RuleEvent {
+        event_type: "person_stay".into(),
+        start_time_ms,
+        end_time_ms,
+        confidence,
+        objects: vec![detection.clone()],
+        frames: vec![FrameDetection { timestamp_ms: start_time_ms, detection, frame_path: None }],
+        rule_version: "rule-v1".into(),
+    }
+}
+
+fn frame(timestamp_ms: u64, confidence: f32) -> FrameDetection {
+    FrameDetection {
+        timestamp_ms,
+        detection: Detection::new("person".into(), confidence, [10.0, 20.0, 30.0, 40.0]),
+        frame_path: Some(PathBuf::from(format!("frame-{timestamp_ms}.jpg"))),
+    }
+}
+
+#[test]
+fn merges_matching_candidates_within_the_gap() {
+    let events = worker::merge_rule_events(
+        vec![candidate(1_000, 1_500, 0.4), candidate(0, 500, 0.8)],
+        3_000,
+    );
+
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].start_time_ms, events[0].end_time_ms), (0, 1_500));
+    assert_eq!(events[0].objects.len(), 2);
+    assert!((events[0].confidence - 0.6).abs() < f32::EPSILON);
+}
+
+#[test]
+fn keeps_candidates_separated_by_more_than_the_gap() {
+    let events = worker::merge_rule_events(
+        vec![candidate(0, 500, 0.8), candidate(3_501, 4_000, 0.4)],
+        3_000,
+    );
+
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
+fn selects_first_peak_last_and_five_second_samples_without_duplicates() {
+    let selected = worker::select_evidence_frames(
+        &[
+            frame(0, 0.4),
+            frame(500, 0.99),
+            frame(5_000, 0.3),
+            frame(7_000, 0.8),
+            frame(10_000, 0.6),
+        ],
+        5_000,
+        12,
+    );
+
+    assert_eq!(selected.iter().map(|(timestamp, _, _)| *timestamp).collect::<Vec<_>>(), vec![0, 500, 5_000, 10_000]);
+}
+
+#[test]
+fn caps_selected_evidence_at_twelve_frames() {
+    let frames = (0..20)
+        .map(|index| frame(index * 500, 0.5 + index as f32 / 100.0))
+        .collect::<Vec<_>>();
+
+    assert_eq!(worker::select_evidence_frames(&frames, 0, 12).len(), 12);
+}
 
 #[tokio::test]
 async fn event_evidence_copies_matching_frames_under_media_root() {

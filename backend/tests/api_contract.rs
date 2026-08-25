@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{header::CONTENT_TYPE, Request, StatusCode},
+    http::{header::{CACHE_CONTROL, CONTENT_TYPE}, Request, StatusCode},
     Router,
 };
 use http_body_util::BodyExt;
@@ -35,12 +35,38 @@ async fn media_route_serves_evidence_images_and_rejects_unsafe_paths() {
         .unwrap();
     assert_eq!(image_response.status(), StatusCode::OK);
     assert_eq!(image_response.headers()[CONTENT_TYPE], "image/jpeg");
+    assert_eq!(image_response.headers()[CACHE_CONTROL], "private, max-age=3600");
 
     let unsafe_response = router
         .oneshot(Request::get("/media/%2E%2E/Cargo.toml").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert!(!unsafe_response.status().is_success());
+}
+
+#[tokio::test]
+async fn deleting_an_event_removes_its_evidence_directory() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("media");
+    let mut state = AppState::default();
+    state.storage = MediaStorage::new(root.clone());
+    let job = state.create_job("delete-evidence.mp4".into(), 1_000);
+    let event = state.seed_event(&job);
+    let directory = root.join("evidence").join(event.id.to_string());
+    tokio::fs::create_dir_all(&directory).await.unwrap();
+    tokio::fs::write(directory.join("frame.jpg"), b"jpeg-evidence").await.unwrap();
+
+    let response = api::router(state)
+        .oneshot(
+            Request::delete(format!("/api/v1/events/{}", event.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(!directory.exists());
 }
 
 #[tokio::test]
