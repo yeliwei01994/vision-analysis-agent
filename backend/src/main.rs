@@ -7,12 +7,14 @@ use vision_event_api::{
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
     let database = match std::env::var("DATABASE_URL") {
         Ok(url) => match Database::connect(&DatabaseConfig::new(url)).await {
             Ok(database) => {
                 if let Err(error) = database.migrate().await {
                     eprintln!("mysql migration failed: {error}");
                 }
+                println!("connected to MySQL for jobs and events");
                 Some(database)
             }
             Err(error) => {
@@ -20,7 +22,10 @@ async fn main() {
                 None
             }
         },
-        Err(_) => None,
+        Err(_) => {
+            eprintln!("DATABASE_URL is missing; API is using in-memory storage only");
+            None
+        }
     };
     let queue = match std::env::var("REDIS_URL") {
         Ok(url) => TaskQueue::new(&url, "vision:jobs").ok(),

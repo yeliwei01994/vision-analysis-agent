@@ -25,6 +25,26 @@ test('shows empty event state when no events exist', async () => {
   expect(await screen.findByText('暂无匹配事件')).toBeInTheDocument();
 });
 
+test('keeps the original metrics and upload progress panel', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  render(<App />);
+  expect(await screen.findByText('今日事件')).toBeInTheDocument();
+  expect(screen.getByText('待复核')).toBeInTheDocument();
+  expect(screen.getByText('处理任务')).toBeInTheDocument();
+  expect(screen.getByText('系统状态')).toBeInTheDocument();
+  expect(screen.getByText('把视频里的异常，变成可检索、可复核的业务事件。')).toBeInTheDocument();
+});
+
+test('upload control sends the selected video to the upload API', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.uploadVideo.mockResolvedValueOnce({ id: 'job-upload', filename: 'clip.mp4', duration_ms: 0, status: 'pending', progress: 0 });
+  apiMock.processVideo.mockResolvedValueOnce({ id: 'job-upload', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 1 });
+  render(<App />);
+  const file = new File(['video'], 'clip.mp4', { type: 'video/mp4' });
+  fireEvent.change(screen.getByLabelText('导入视频任务'), { target: { files: [file] } });
+  await waitFor(() => expect(apiMock.uploadVideo).toHaveBeenCalledWith(file));
+});
+
 test('shows real evidence frames and lets the reviewer select a timeline point', async () => {
   const evidenced = { ...event, event_type: 'person_stay', rule_version: 'rule-v1', analysis: null, evidence: { frame_urls: ['/media/evidence/event-1/frame-1.jpg', '/media/evidence/event-1/frame-2.jpg'], frames: [
     { timestamp_ms: 0, image_url: '/media/evidence/event-1/frame-1.jpg', detections: event.objects },

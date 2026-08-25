@@ -42,6 +42,8 @@ vision-analysis-agent/
 │   └── migrations/
 ├── deploy/                  # Nginx 和容器部署配置
 │   └── nginx.conf
+├── inference/               # YOLOv8n 推理服务
+│   └── yolo-service/
 ├── scripts/                 # 本地检查和启动脚本
 ├── docs/                    # 架构、开发计划和日报
 ├── docker-compose.yml       # 本地完整服务编排
@@ -85,10 +87,10 @@ docker compose up -d
 ## 当前业务流程
 
 1. 用户通过 React 页面上传视频。
-2. Rust API 保存视频并创建任务。
-3. 任务状态写入 MySQL，并发送到 Redis 队列。
-4. Worker 消费任务并执行视频分析。
-5. 检测结果经过规则引擎生成业务事件。
+2. Rust API 保存视频、创建任务并自动发送到 Redis 队列。
+3. Worker 消费任务，使用 ffmpeg 抽取 JPEG 帧。
+4. Rust `YoloDetector` 调用 `YOLO_URL/v1/infer/frame` 获取真实检测结果。
+5. 检测结果经过规则引擎生成业务事件，并保存模型版本。
 6. 事件结果保存到 MySQL。
 7. 前端查询事件并展示证据、分析和审核状态。
 
@@ -102,6 +104,8 @@ POST /api/v1/videos/upload
 POST /api/v1/videos/{id}/process
 
 GET  /api/v1/jobs/{id}
+PUT  /api/v1/jobs/{id}
+DELETE /api/v1/jobs/{id}
 
 GET  /api/v1/events
 GET  /api/v1/events/{id}
@@ -154,7 +158,7 @@ docker compose config
 
 当前平台已经完成基础任务链路、事件规则接口、前端事件审核和 Docker 部署，但仍有以下演进工作：
 
-- 将 MockDetector 替换为真实 YOLO 推理服务；
+- 将 Rust Worker 的 MockDetector 接入真实 YOLOv8n 推理服务；
 - 接入大模型事件解释和自然语言检索；
 - 生成事件截图和视频证据片段；
 - 将 Redis Stream 升级为消费组、ACK、重试和死信队列；
@@ -162,3 +166,25 @@ docker compose config
 - 增加开发模式热更新配置；
 - 增加并发任务和长视频压力测试。
 
+## YOLOv8n 推理服务
+
+当前已加入独立的 YOLOv8n CPU 推理服务，接口地址为 `http://localhost:9000`（Docker 内部为 `http://yolo:9000`）：
+
+```text
+GET  /health
+POST /v1/infer/frame
+```
+
+启动服务：
+
+```powershell
+docker compose up -d yolo
+```
+
+模型权重会缓存到 Docker volume `yolo_models`。上传视频后会自动进入 Worker，前端事件详情显示真实目标类别、置信度和检测器模型版本。
+
+完整 E2E 测试：
+
+```powershell
+.\scripts\e2e-yolo.ps1
+```

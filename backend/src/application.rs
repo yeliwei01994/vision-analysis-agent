@@ -23,7 +23,7 @@ impl Default for AppState {
         let mut rules = HashMap::new();
         rules.insert(
             "person_stay".into(),
-            EventRule::new("person_stay", "person", 0.8, 1_000),
+            EventRule::new("person_stay", "person", 0.25, 0),
         );
         Self {
             jobs: Arc::default(),
@@ -85,6 +85,35 @@ impl AppState {
             .expect("jobs lock poisoned")
             .get(&id)
             .cloned()
+    }
+    pub fn jobs(&self) -> Vec<VideoJob> {
+        self.jobs
+            .read()
+            .expect("jobs lock poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+    pub fn update_job_filename(&self, id: Uuid, filename: String) -> Option<VideoJob> {
+        let mut jobs = self.jobs.write().expect("jobs lock poisoned");
+        let job = jobs.get_mut(&id)?;
+        job.filename = filename;
+        Some(job.clone())
+    }
+    pub fn delete_job(&self, id: Uuid) -> Result<(), JobStatus> {
+        let mut jobs = self.jobs.write().expect("jobs lock poisoned");
+        let job = jobs.get(&id).ok_or(JobStatus::Failed)?;
+        if matches!(job.status, JobStatus::Processing) {
+            return Err(job.status.clone());
+        }
+        jobs.remove(&id);
+        drop(jobs);
+        self.events.write().expect("events lock poisoned").retain(|_, event| event.job_id != id);
+        Ok(())
+    }
+    pub fn forget_job(&self, id: Uuid) {
+        self.jobs.write().expect("jobs lock poisoned").remove(&id);
+        self.events.write().expect("events lock poisoned").retain(|_, event| event.job_id != id);
     }
     pub fn event(&self, id: Uuid) -> Option<Event> {
         self.events

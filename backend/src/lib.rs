@@ -8,3 +8,4 @@ pub mod rules;
 pub mod storage;
 pub mod video;
 pub mod worker;
+pub mod yolo;

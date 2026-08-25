@@ -1,0 +1,60 @@
+from io import BytesIO
+
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from app.main import app, set_detector
+
+
+class FakeDetector:
+    version = "yolov8n-test"
+
+    def predict(self, image_bytes: bytes, timestamp_ms: int):
+        return {
+            "model_version": self.version,
+            "timestamp_ms": timestamp_ms,
+            "detections": [
+                {
+                    "class_name": "person",
+                    "confidence": 0.95,
+                    "bbox": [1.0, 2.0, 30.0, 40.0],
+                    "track_id": None,
+                }
+            ],
+        }
+
+
+client = TestClient(app)
+
+
+def test_health_reports_model_service():
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["service"] == "yolo-service"
+
+
+def test_frame_inference_returns_detection_contract():
+    image = Image.new("RGB", (32, 32), color="white")
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG")
+    set_detector(FakeDetector())
+
+    response = client.post(
+        "/v1/infer/frame",
+        files={"file": ("frame.jpg", buffer.getvalue(), "image/jpeg")},
+        data={"timestamp_ms": "1200"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "model_version": "yolov8n-test",
+        "timestamp_ms": 1200,
+        "detections": [
+            {
+                "class_name": "person",
+                "confidence": 0.95,
+                "bbox": [1.0, 2.0, 30.0, 40.0],
+                "track_id": None,
+            }
+        ],
+    }

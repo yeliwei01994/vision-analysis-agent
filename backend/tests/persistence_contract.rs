@@ -1,6 +1,6 @@
 use std::env;
 use uuid::Uuid;
-use vision_event_api::persistence::DatabaseConfig;
+use vision_event_api::persistence::{Database, DatabaseConfig};
 use vision_event_api::queue::QueueMessage;
 
 #[test]
@@ -23,5 +23,21 @@ fn migrations_are_kept_in_repository() {
     assert!(
         std::path::Path::new("migrations/001_initial.sql").exists()
             || env::var("CARGO_MANIFEST_DIR").is_ok()
+    );
+}
+
+#[tokio::test]
+async fn list_events_keeps_rows_with_null_prompt_version() {
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    let events = database.list_events().await.unwrap();
+    assert!(
+        events.iter().any(|event| event.prompt_version.is_none()),
+        "events with a NULL prompt_version must remain readable"
     );
 }

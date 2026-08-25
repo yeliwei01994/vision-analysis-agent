@@ -14,7 +14,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     };
     println!("worker processing job {job_id}: {}", job.filename);
     state.update_job(job_id, JobStatus::Processing, 35);
-    let (frames, detector_version) = match job.source_uri.as_deref() {
+    let (frame_directory, frames, detector_version) = match job.source_uri.as_deref() {
         Some(source_uri) => match process_video(source_uri).await {
             Ok(result) => result,
             Err(error) => {
@@ -24,7 +24,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
                 return false;
             }
         },
-        None => (Vec::new(), "no-video-source".to_string()),
+        None => (None, Vec::new(), "no-video-source".to_string()),
     };
     state.update_job(job_id, JobStatus::Processing, 75);
     let rule = state
@@ -77,6 +77,9 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
             }
         }
     }
+    if let Some(directory) = frame_directory {
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
     state.update_job(job_id, JobStatus::Completed, 100);
     if let Some(database) = &state.database {
         if let Some(job) = state.job(job_id) {
@@ -104,7 +107,7 @@ async fn persist_job_state(state: &AppState, job_id: Uuid, reason: &str) {
 
 async fn process_video(
     source_uri: &str,
-) -> Result<(Vec<crate::rules::FrameDetection>, String), String> {
+) -> Result<(Option<std::path::PathBuf>, Vec<crate::rules::FrameDetection>, String), String> {
     let (directory, frame_paths) =
         video::extract_frames(std::path::Path::new(source_uri), 500).await?;
     let detector = YoloDetector::from_env().map_err(|error| error.to_string())?;
@@ -138,8 +141,8 @@ async fn process_video(
         }
         frames.extend(detected);
     }
-    let _ = tokio::fs::remove_dir_all(directory).await;
     Ok((
+        Some(directory),
         frames,
         model_version.unwrap_or_else(|| "yolo-no-detections".into()),
     ))

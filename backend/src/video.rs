@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct VideoMetadata {
@@ -29,6 +30,50 @@ pub async fn probe(path: &Path) -> VideoMetadata {
             ..Default::default()
         },
     }
+}
+
+pub fn frame_timestamp_ms(filename: &str) -> Option<u64> {
+    let stem = Path::new(filename).file_stem()?.to_str()?;
+    stem.strip_prefix("frame-")?.parse().ok()
+}
+
+pub async fn extract_frames(
+    path: &Path,
+    interval_ms: u64,
+) -> Result<(PathBuf, Vec<PathBuf>), String> {
+    let directory = std::env::temp_dir().join(format!("vision-frames-{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| error.to_string())?;
+    let fps = 1000.0 / interval_ms.max(1) as f64;
+    let pattern = directory.join("frame-%010d.jpg");
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(path)
+        .args(["-vf", &format!("fps={fps}"), "-q:v", "3"])
+        .arg(&pattern)
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let _ = tokio::fs::remove_dir_all(&directory).await;
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let mut entries = tokio::fs::read_dir(&directory)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut frames = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if entry.path().extension().and_then(|value| value.to_str()) == Some("jpg") {
+            frames.push(entry.path());
+        }
+    }
+    frames.sort();
+    Ok((directory, frames))
 }
 
 fn parse_probe(bytes: &[u8]) -> VideoMetadata {

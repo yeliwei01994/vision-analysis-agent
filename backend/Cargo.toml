@@ -13,7 +13,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio-util = { version = "0.7", features = ["io"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "mysql", "migrate", "macros", "uuid", "json"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+async-trait = "0.1"
+dotenvy = "0.15"
 
 [dev-dependencies]
 http-body-util = "0.1"
 tower = "0.5"
+tempfile = "3"

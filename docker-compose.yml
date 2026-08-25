@@ -7,6 +7,7 @@ services:
       RUST_LOG: info
       DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
       REDIS_URL: redis://redis:6379
+      YOLO_URL: http://yolo:9000
     ports: ["8080:8080"]
     volumes: ["media_data:/app/media"]
     depends_on:
@@ -22,10 +23,12 @@ services:
       WORKER_MODE: "1"
       DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
       REDIS_URL: redis://redis:6379
+      YOLO_URL: http://yolo:9000
     volumes: ["media_data:/app/media"]
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
+      yolo: { condition: service_started }
   frontend:
     build:
       context: .
@@ -33,6 +36,16 @@ services:
     ports: ["8088:80"]
     volumes: ["media_data:/usr/share/nginx/html/media:ro"]
     depends_on: [api]
+  yolo:
+    build:
+      context: .
+      dockerfile: inference/yolo-service/Dockerfile
+    environment:
+      YOLO_MODEL: yolov8n.pt
+      YOLO_DEVICE: cpu
+      YOLO_CONFIDENCE: "0.25"
+    ports: ["9000:9000"]
+    volumes: ["yolo_models:/root/.config/Ultralytics"]
   mysql:
     image: mysql:8.4
     environment:
@@ -56,3 +69,4 @@ services:
 volumes:
   mysql_data:
   media_data:
+  yolo_models:
