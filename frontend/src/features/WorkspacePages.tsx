@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { EventItem, EventRule, VideoJob } from '../types/events';
 
@@ -39,13 +39,48 @@ export function RulesPage({ rules, events, onSaved }: { rules: EventRule[]; even
   const [tool, setTool] = useState<'polygon' | 'rectangle'>('polygon');
   const [points, setPoints] = useState<[number, number][]>([]);
   const [dragStart, setDragStart] = useState<[number, number] | null>(null);
+  const dragStartRef = useRef<[number, number] | null>(null);
+  const drawingPointerRef = useRef<number | null>(null);
+  const pendingPointRef = useRef<[number, number] | null>(null);
+  const frameRef = useRef<number | null>(null);
   function update(eventType: string, field: 'min_confidence' | 'min_duration_ms' | 'threshold', value: number) { setDrafts((current) => ({ ...current, [eventType]: { ...current[eventType], [field]: value } })); }
   async function save(rule: EventRule) { setSaving(rule.event_type); try { await api.updateRule(rule); await onSaved(); } finally { setSaving(''); } }
   function openEditor(rule: EventRule) { setEditing(rule); setPoints(rule.geometry?.points ?? []); setBackground('blank'); }
   function pointFrom(event: React.PointerEvent<HTMLDivElement>): [number, number] { const rect = event.currentTarget.getBoundingClientRect(); return [Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(rect.width, 1))), Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(rect.height, 1)))]; }
-  function startRectangle(event: React.PointerEvent<HTMLDivElement>) { if (tool !== 'rectangle') return; event.preventDefault(); event.currentTarget.setPointerCapture?.(event.pointerId); const start = pointFrom(event); setDragStart(start); setPoints([start]); }
-  function moveRectangle(event: React.PointerEvent<HTMLDivElement>) { if (tool !== 'rectangle' || !dragStart) return; event.preventDefault(); const [x, y] = dragStart; const [right, bottom] = pointFrom(event); setPoints([[Math.min(x, right), Math.min(y, bottom)], [Math.max(x, right), Math.min(y, bottom)], [Math.max(x, right), Math.max(y, bottom)], [Math.min(x, right), Math.max(y, bottom)]]); }
-  function finishRectangle() { setDragStart(null); }
+  function startRectangle(event: React.PointerEvent<HTMLDivElement>) {
+    if (tool !== 'rectangle' || drawingPointerRef.current !== null) return;
+    event.preventDefault();
+    const start = pointFrom(event);
+    drawingPointerRef.current = event.pointerId;
+    dragStartRef.current = start;
+    setDragStart(start);
+    setPoints([start]);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+  function moveRectangle(event: React.PointerEvent<HTMLDivElement>) {
+    if (tool !== 'rectangle' || drawingPointerRef.current !== event.pointerId || !dragStartRef.current) return;
+    event.preventDefault();
+    pendingPointRef.current = pointFrom(event);
+    if (frameRef.current !== null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      const start = dragStartRef.current;
+      const end = pendingPointRef.current;
+      if (!start || !end) return;
+      const [x, y] = start;
+      const [right, bottom] = end;
+      setPoints([[Math.min(x, right), Math.min(y, bottom)], [Math.max(x, right), Math.min(y, bottom)], [Math.max(x, right), Math.max(y, bottom)], [Math.min(x, right), Math.max(y, bottom)]]);
+    });
+  }
+  function finishRectangle(event?: React.PointerEvent<HTMLDivElement>) {
+    if (event && drawingPointerRef.current !== event.pointerId) return;
+    if (frameRef.current !== null) { window.cancelAnimationFrame(frameRef.current); frameRef.current = null; }
+    if (event && event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+    drawingPointerRef.current = null;
+    dragStartRef.current = null;
+    pendingPointRef.current = null;
+    setDragStart(null);
+  }
   function addPolygonPoint(event: React.MouseEvent<HTMLDivElement>) { if (tool === 'polygon') setPoints(current => [...current, (() => { const rect = event.currentTarget.getBoundingClientRect(); return [Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))] as [number, number]; })()]); }
   const evidenceUrl = events.flatMap(event => event.evidence.frames ?? []).find(frame => frame.image_url)?.image_url;
   return <section className="page-panel"><div className="page-heading"><div><p className="eyebrow">EVENT RULES</p><h2>规则配置</h2><p>配置区域、阈值和启用状态。</p></div></div><div className="rule-grid">{rules.length === 0 ? <div className="empty">暂无规则</div> : rules.map((rule) => { const draft = drafts[rule.event_type] ?? rule; return <div className="rule-card" key={rule.event_type}><div><strong>{rule.event_type}</strong><small>目标：{rule.class_name} · {rule.version}</small></div><label>最低置信度<input type="number" min="0" max="1" step="0.01" value={draft.min_confidence} onChange={(event) => update(rule.event_type, 'min_confidence', Number(event.target.value))} /></label><label>最短持续时间（毫秒）<input type="number" min="0" step="100" value={draft.min_duration_ms} onChange={(event) => update(rule.event_type, 'min_duration_ms', Number(event.target.value))} /></label>{rule.event_type === 'person_count_limit' && <label>人数上限<input type="number" min="1" value={draft.threshold ?? 1} onChange={(event) => update(rule.event_type, 'threshold', Number(event.target.value))} /></label>}<label><input type="checkbox" checked={draft.enabled ?? true} onChange={(event) => setDrafts(current => ({ ...current, [rule.event_type]: { ...draft, enabled: event.target.checked } }))} />启用规则</label><button onClick={() => openEditor(draft)}>编辑区域</button><button className="confirm" onClick={() => save(draft)} disabled={saving === rule.event_type}>{saving === rule.event_type ? '保存中…' : '保存规则'}</button></div>; })}</div>{editing && <div className="modal-backdrop"><div className="modal zone-modal" role="dialog"><h3>编辑区域：{editing.event_type}</h3><div className="row-actions"><button onClick={() => setBackground('blank')}>空白画布</button><button disabled={!evidenceUrl} onClick={() => setBackground('evidence')}>视频证据背景</button><button onClick={() => setTool('polygon')}>多边形</button><button onClick={() => { setTool('rectangle'); setPoints([]); }}>矩形（拖动绘制）</button><button onClick={() => setPoints([])}>重置</button></div><div className="zone-canvas" onClick={tool === 'polygon' ? addPolygonPoint : undefined} onPointerDown={startRectangle} onPointerMove={moveRectangle} onPointerUp={finishRectangle} onPointerCancel={finishRectangle} onPointerLeave={finishRectangle} style={{ touchAction: 'none', ...(background === 'evidence' && evidenceUrl ? { backgroundImage: `url(${evidenceUrl})` } : {}) }}><svg viewBox="0 0 100 100" preserveAspectRatio="none"><polygon points={points.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')} /></svg></div><p>{tool === 'rectangle' ? '按住鼠标拖动绘制矩形' : points.length < 3 ? '请至少绘制 3 个点' : `已绘制 ${points.length} 个点`}</p><div className="modal-actions"><button onClick={() => setEditing(null)}>取消</button><button className="confirm" disabled={points.length < 3} onClick={() => { const next = { ...editing, geometry: { kind: 'polygon' as const, points } }; setDrafts(current => ({ ...current, [editing.event_type]: next })); setEditing(null); }}>应用区域</button></div></div></div>}</section>;
