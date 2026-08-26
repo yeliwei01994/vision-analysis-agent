@@ -43,6 +43,12 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         None => (None, Vec::new(), "no-video-source".to_string()),
     };
     state.update_job(job_id, JobStatus::Processing, 75);
+    if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
+        current.annotated_video_status = Some("pending".into());
+        current.annotated_video_error = None;
+        current.annotated_video_url = None;
+    }
+    persist_job_state(&state, job_id, "playback pending").await;
     let rules = state.event_rules();
     for rule in rules.into_iter().filter(|rule| rule.enabled) {
     for candidate in merge_rule_events(RuleEngine::new(rule).evaluate(&frames), 3_000) {
@@ -84,6 +90,24 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         }
     }
     }
+    let playback_duration_ms = job.duration_ms.max(frames.len() as u64 * 500);
+    let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms).await;
+    if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
+        match playback_result {
+            Ok(url) => {
+                current.annotated_video_url = Some(url);
+                current.annotated_video_status = Some("ready".into());
+                current.annotated_video_error = None;
+            }
+            Err(error) => {
+                eprintln!("failed to generate annotated playback for {job_id}: {error}");
+                current.annotated_video_url = None;
+                current.annotated_video_status = Some("failed".into());
+                current.annotated_video_error = Some(error);
+            }
+        }
+    }
+    persist_job_state(&state, job_id, "playback result").await;
     if let Some(directory) = frame_directory {
         let _ = tokio::fs::remove_dir_all(directory).await;
     }

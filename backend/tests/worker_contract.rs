@@ -109,6 +109,39 @@ async fn event_evidence_copies_matching_frames_under_media_root() {
 }
 
 #[tokio::test]
+async fn annotated_video_contains_the_full_detection_frame_sequence() {
+    let ffmpeg_available = tokio::process::Command::new("ffmpeg")
+        .args(["-version"])
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !ffmpeg_available {
+        eprintln!("ffmpeg is required for this integration test");
+        return;
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let frame_one = temporary.path().join("frame-0000000001.jpg");
+    let frame_two = temporary.path().join("frame-0000000002.jpg");
+    image::RgbImage::from_pixel(32, 24, image::Rgb([10, 20, 30])).save(&frame_one).unwrap();
+    image::RgbImage::from_pixel(32, 24, image::Rgb([30, 20, 10])).save(&frame_two).unwrap();
+    let storage = MediaStorage::new(temporary.path().join("media"));
+    let detection = Detection::new("person".into(), 0.87, [0.1, 0.1, 0.5, 0.8]);
+    let frames = vec![
+        FrameDetection { timestamp_ms: 0, detection: detection.clone(), frame_path: Some(frame_one) },
+        FrameDetection { timestamp_ms: 500, detection, frame_path: Some(frame_two) },
+    ];
+
+    let job_id = Uuid::new_v4();
+    let url = storage.save_annotated_video(job_id, &frames, 1_000).await.unwrap();
+    assert_eq!(url, format!("/media/annotated/{job_id}.mp4"));
+    let output = temporary.path().join("media").join("annotated").join(format!("{job_id}.mp4"));
+    assert!(output.exists());
+    assert!(tokio::fs::metadata(output).await.unwrap().len() > 0);
+}
+
+#[tokio::test]
 async fn persisted_video_job_can_be_loaded_by_worker() {
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");

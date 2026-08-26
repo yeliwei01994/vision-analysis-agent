@@ -76,6 +76,29 @@ pub async fn extract_frames(
     Ok((directory, frames))
 }
 
+pub async fn encode_frames(
+    input_directory: &Path,
+    output_path: &Path,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let pattern = input_directory.join("frame-%010d.jpg");
+    let duration = format!("{:.3}", duration_ms as f64 / 1000.0);
+    let output = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-framerate", "2", "-start_number", "1", "-i"])
+        .arg(&pattern)
+        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t"])
+        .arg(duration)
+        .arg(output_path)
+        .output()
+        .await
+        .map_err(|error| format!("无法启动 ffmpeg：{error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
 fn parse_probe(bytes: &[u8]) -> VideoMetadata {
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
     let duration_ms = value
