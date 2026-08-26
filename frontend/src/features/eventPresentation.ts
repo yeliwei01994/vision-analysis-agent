@@ -1,6 +1,6 @@
 import type { AnalysisResult, EventItem } from '../types/events';
 
-const ruleNames: Record<string, string> = { person_stay: '人员停留', person_enter_zone: '人员进入区域' };
+const ruleNames: Record<string, string> = { person_stay: '人员停留', person_enter_zone: '人员进入区域', person_count_limit: '最大人员数量' };
 const classNames: Record<string, string> = { person: '人员', boat: '船只', bird: '鸟类' };
 export const displayEventType = (value: string) => ruleNames[value] ?? value;
 export const displayClassName = (value: string) => classNames[value] ?? value;

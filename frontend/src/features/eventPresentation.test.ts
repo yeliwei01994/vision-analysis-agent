@@ -7,6 +7,7 @@ const event: EventItem = { id: 'a', job_id: 'job', event_type: 'person_stay', ru
 describe('event presentation', () => {
   it('translates rules, summarizes detections, and groups related events', () => {
     expect(displayEventType('person_stay')).toBe('人员停留');
+    expect(displayEventType('person_count_limit')).toBe('最大人员数量');
     expect(detectionSummary(event)).toBe('人员 11 次检测 · 平均置信度 34%');
     expect(fallbackAnalysis(event).summary).toContain('视频前 6 秒检测到人员停留');
     expect(groupEvents([event, { ...event, id: 'b', start_time_ms: 7000 }])).toHaveLength(1);
