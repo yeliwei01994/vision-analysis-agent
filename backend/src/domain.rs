@@ -30,6 +30,12 @@ pub struct VideoJob {
     pub status: JobStatus,
     pub progress: u8,
     pub source_uri: Option<String>,
+    #[serde(default)]
+    pub annotated_video_url: Option<String>,
+    #[serde(default)]
+    pub annotated_video_status: Option<String>,
+    #[serde(default)]
+    pub annotated_video_error: Option<String>,
 }
 
 impl VideoJob {
@@ -41,6 +47,9 @@ impl VideoJob {
             status: JobStatus::Pending,
             progress: 0,
             source_uri: None,
+            annotated_video_url: None,
+            annotated_video_status: None,
+            annotated_video_error: None,
         }
     }
 }

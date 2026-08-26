@@ -40,13 +40,13 @@ impl Database {
     }
 
     pub async fn save_job(&self, job: &VideoJob) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO video_jobs (id, filename, duration_ms, status, progress, source_uri) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), progress=VALUES(progress), source_uri=VALUES(source_uri)")
-            .bind(job.id.to_string()).bind(&job.filename).bind(job.duration_ms as i64).bind(status_name(&job.status)).bind(job.progress as i32).bind(&job.source_uri).execute(&self.pool).await?;
+        sqlx::query("INSERT INTO video_jobs (id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), progress=VALUES(progress), source_uri=VALUES(source_uri), annotated_video_url=VALUES(annotated_video_url), annotated_video_status=VALUES(annotated_video_status), annotated_video_error=VALUES(annotated_video_error)")
+            .bind(job.id.to_string()).bind(&job.filename).bind(job.duration_ms as i64).bind(status_name(&job.status)).bind(job.progress as i32).bind(&job.source_uri).bind(&job.annotated_video_url).bind(&job.annotated_video_status).bind(&job.annotated_video_error).execute(&self.pool).await?;
         Ok(())
     }
 
     pub async fn get_job(&self, id: Uuid) -> Result<Option<VideoJob>, sqlx::Error> {
-        let row = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri FROM video_jobs WHERE id = ? AND deleted_at IS NULL")
+        let row = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error FROM video_jobs WHERE id = ? AND deleted_at IS NULL")
             .bind(id.to_string()).fetch_optional(&self.pool).await?;
         Ok(row.and_then(|row| {
             Some(VideoJob {
@@ -62,6 +62,9 @@ impl Database {
                 },
                 progress: row.try_get::<u8, _>("progress").ok()?,
                 source_uri: row.try_get("source_uri").ok()?,
+                annotated_video_url: row.try_get("annotated_video_url").ok()?,
+                annotated_video_status: row.try_get("annotated_video_status").ok()?,
+                annotated_video_error: row.try_get("annotated_video_error").ok()?,
             })
         }))
     }
@@ -108,7 +111,7 @@ impl Database {
     }
 
     pub async fn list_jobs(&self) -> Result<Vec<VideoJob>, sqlx::Error> {
-        let rows = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri FROM video_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200")
+        let rows = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error FROM video_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200")
             .fetch_all(&self.pool).await?;
         Ok(rows.into_iter().filter_map(|row| {
             Some(VideoJob {
@@ -124,6 +127,9 @@ impl Database {
                 },
                 progress: row.try_get::<u8, _>("progress").ok()?,
                 source_uri: row.try_get("source_uri").ok()?,
+                annotated_video_url: row.try_get("annotated_video_url").ok()?,
+                annotated_video_status: row.try_get("annotated_video_status").ok()?,
+                annotated_video_error: row.try_get("annotated_video_error").ok()?,
             })
         }).collect())
     }

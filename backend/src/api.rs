@@ -93,10 +93,15 @@ async fn get_media(
     Path(path): Path<String>,
 ) -> Result<Response, ApiError> {
     let relative = safe_media_path(&path).ok_or(ApiError::NotFound)?;
-    let bytes = tokio::fs::read(state.storage.root().join(relative))
+    let bytes = tokio::fs::read(state.storage.root().join(&relative))
         .await
         .map_err(|_| ApiError::NotFound)?;
-    Ok(([(CONTENT_TYPE, "image/jpeg"), (CACHE_CONTROL, "private, max-age=3600")], bytes).into_response())
+    let content_type = match relative.extension().and_then(|extension| extension.to_str()) {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("mp4") => "video/mp4",
+        _ => "application/octet-stream",
+    };
+    Ok(([(CONTENT_TYPE, content_type), (CACHE_CONTROL, "private, max-age=3600")], bytes).into_response())
 }
 
 fn safe_media_path(value: &str) -> Option<PathBuf> {
