@@ -40,7 +40,7 @@ export default function App() {
   const [reviewNote, setReviewNote] = useState('');
   const [disposition, setDisposition] = useState('');
   const [reviewHistory, setReviewHistory] = useState<import('./types/events').EventReview[]>([]);
-  const [playbackMode, setPlaybackMode] = useState<'original' | 'annotated'>('annotated');
+  const [playbackMode, setPlaybackMode] = useState<'original' | 'annotated'>('original');
 
   useEffect(() => {
     Promise.all([api.listEvents(), api.listRules(), api.listJobs()])
@@ -62,7 +62,7 @@ export default function App() {
   const hasOriginalVideo = Boolean(selectedJob?.source_uri);
   const effectivePlaybackMode = playbackMode === 'annotated' && !hasAnnotatedPlayback ? 'original' : playbackMode;
 
-  async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setPlaybackMode('annotated'); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
+  async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setPlaybackMode('original'); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
   async function refreshEvents() { const next = await api.listEvents(); setEvents(next); setSelected(next[0] ?? null); }
   async function waitForJob(id: string) {
     for (let attempt = 0; attempt < 60; attempt += 1) {

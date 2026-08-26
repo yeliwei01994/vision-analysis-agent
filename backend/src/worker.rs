@@ -90,7 +90,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         }
     }
     }
-    let playback_duration_ms = job.duration_ms.max(frames.len() as u64 * 500);
+    let playback_duration_ms = job.duration_ms.max(frames.len() as u64 * video::DETECTION_INTERVAL_MS);
     let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms).await;
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         match playback_result {
@@ -238,7 +238,7 @@ async fn process_video(
     source_uri: &str,
 ) -> Result<(Option<std::path::PathBuf>, Vec<crate::rules::FrameDetection>, String), String> {
     let (directory, frame_paths) =
-        video::extract_frames(std::path::Path::new(source_uri), 500).await?;
+        video::extract_frames(std::path::Path::new(source_uri), video::DETECTION_INTERVAL_MS).await?;
     let detector = YoloDetector::from_env().map_err(|error| error.to_string())?;
     let mut frames = Vec::new();
     let mut model_version = None;
@@ -250,7 +250,7 @@ async fn process_video(
         if video::frame_timestamp_ms(filename).is_none() {
             return Err(format!("invalid frame filename: {filename}"));
         }
-        let timestamp_ms = index as u64 * 500;
+        let timestamp_ms = index as u64 * video::DETECTION_INTERVAL_MS;
         let response = detector.detect_frame(frame_path, timestamp_ms).await?;
         println!(
             "YOLO response: frame={}, timestamp_ms={}, detections={}, classes={:?}",

@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use uuid::Uuid;
 
+pub const DETECTION_INTERVAL_MS: u64 = 100;
+pub const REPLAY_FPS: u32 = 10;
+
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct VideoMetadata {
     pub duration_ms: u64,
@@ -84,7 +87,7 @@ pub async fn encode_frames(
     let pattern = input_directory.join("frame-%010d.jpg");
     let duration = format!("{:.3}", duration_ms as f64 / 1000.0);
     let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-framerate", "2", "-start_number", "1", "-i"])
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-framerate", &REPLAY_FPS.to_string(), "-start_number", "1", "-i"])
         .arg(&pattern)
         .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t"])
         .arg(duration)
