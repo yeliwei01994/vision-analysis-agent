@@ -154,9 +154,11 @@ test('shows original and YOLO playback choices for the selected event job', asyn
 
   expect(await screen.findByRole('button', { name: 'YOLO 检测回放' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '原始视频' })).toBeInTheDocument();
+  const originalVideo = screen.getByLabelText('原始视频');
   expect(screen.getByTestId('playback-source')).toHaveAttribute('src', '/media/clip.mp4');
   fireEvent.click(screen.getByRole('button', { name: 'YOLO 检测回放' }));
   expect(screen.getByTestId('playback-source')).toHaveAttribute('src', '/media/annotated/job-1.mp4');
+  expect(screen.getByLabelText('YOLO 检测回放')).not.toBe(originalVideo);
   fireEvent.click(screen.getByRole('button', { name: '原始视频' }));
   expect(screen.getByTestId('playback-source')).toHaveAttribute('src', '/media/clip.mp4');
 });
