@@ -2,8 +2,19 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use uuid::Uuid;
 
-pub const DETECTION_INTERVAL_MS: u64 = 100;
+pub const DETECTION_INTERVAL_MS: u64 = 200;
 pub const REPLAY_FPS: u32 = 10;
+
+pub fn detection_interval_from(value: Option<&str>) -> u64 {
+    value
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(DETECTION_INTERVAL_MS)
+        .clamp(100, 5000)
+}
+
+pub fn detection_interval_ms() -> u64 {
+    detection_interval_from(std::env::var("DETECTION_INTERVAL_MS").ok().as_deref())
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct VideoMetadata {

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::{
@@ -51,6 +52,9 @@ pub struct ReviewRequest {
 pub struct EventQuery {
     pub job_id: Option<Uuid>, pub event_type: Option<String>, pub zone_key: Option<String>, pub class_name: Option<String>, pub status: Option<EventStatus>, pub severity: Option<String>, pub min_confidence: Option<f32>, pub max_confidence: Option<f32>, pub from_ms: Option<u64>, pub to_ms: Option<u64>, pub reviewer: Option<String>, pub page: Option<usize>, pub page_size: Option<usize>, pub sort: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Default)]
+pub struct EventListQuery { pub limit: Option<usize> }
 
 #[derive(Debug, Serialize)]
 pub struct EventPage { pub items: Vec<Event>, pub total: usize, pub page: usize, pub page_size: usize }
@@ -137,7 +141,7 @@ async fn upload_video(
     mut multipart: Multipart,
 ) -> Result<Json<VideoJob>, ApiError> {
     let mut filename = "upload.bin".to_string();
-    let mut bytes = None;
+    let mut saved = None;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -147,16 +151,37 @@ async fn upload_video(
             if let Some(name) = field.file_name() {
                 filename = name.to_string();
             }
-            bytes = Some(field.bytes().await.map_err(|_| ApiError::BadRequest)?);
+            let temporary = state.storage.create_upload_temp(&filename).await.map_err(|_| ApiError::Internal)?;
+            let mut output = tokio::fs::File::create(&temporary).await.map_err(|_| ApiError::Internal)?;
+            let mut field = field;
+            while let Some(chunk) = match field.chunk().await {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    state.storage.discard_upload_temp(&temporary).await;
+                    return Err(ApiError::BadRequest);
+                }
+            } {
+                if output.write_all(&chunk).await.is_err() {
+                    state.storage.discard_upload_temp(&temporary).await;
+                    return Err(ApiError::Internal);
+                }
+            }
+            if output.flush().await.is_err() {
+                state.storage.discard_upload_temp(&temporary).await;
+                return Err(ApiError::Internal);
+            }
+            drop(output);
+            saved = match state.storage.finalize_upload(temporary.clone(), &filename).await {
+                Ok(path) => Some(path),
+                Err(_) => {
+                    state.storage.discard_upload_temp(&temporary).await;
+                    return Err(ApiError::Internal);
+                }
+            };
             break;
         }
     }
-    let bytes = bytes.ok_or(ApiError::BadRequest)?;
-    let saved = state
-        .storage
-        .save_upload(&filename, &bytes)
-        .await
-        .map_err(|_| ApiError::Internal)?;
+    let saved = saved.ok_or(ApiError::BadRequest)?;
     let metadata = crate::video::probe(&saved).await;
     let mut job = state.create_job(filename, metadata.duration_ms);
     job.source_uri = Some(saved.to_string_lossy().to_string());
@@ -295,9 +320,10 @@ async fn list_jobs(State(state): State<AppState>) -> Json<Vec<VideoJob>> {
     }
     Json(state.jobs())
 }
-async fn list_events(State(state): State<AppState>) -> Json<Vec<Event>> {
+async fn list_events(State(state): State<AppState>, Query(query): Query<EventListQuery>) -> Json<Vec<Event>> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
     if let Some(database) = &state.database {
-        match database.list_events().await {
+        match database.list_events_limited(limit).await {
             Ok(events) => {
                 println!("loaded {} events from MySQL", events.len());
                 return Json(with_related(events));
@@ -305,7 +331,9 @@ async fn list_events(State(state): State<AppState>) -> Json<Vec<Event>> {
             Err(error) => eprintln!("failed to list events from MySQL: {error}"),
         }
     }
-    Json(with_related(state.events()))
+    let mut events = state.events();
+    events.truncate(limit);
+    Json(with_related(events))
 }
 
 fn with_related(mut events: Vec<Event>) -> Vec<Event> {

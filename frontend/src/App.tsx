@@ -43,7 +43,7 @@ export default function App() {
   const [playbackMode, setPlaybackMode] = useState<'original' | 'annotated'>('original');
 
   useEffect(() => {
-    Promise.all([api.listEvents(), api.listRules(), api.listJobs()])
+    Promise.all([api.listEvents(50), api.listRules(), api.listJobs()])
       .then(([nextEvents, nextRules, nextJobs]) => {
         setEvents(nextEvents); setSelected(nextEvents[0] ?? null); setRules(nextRules); setJobs(nextJobs);
       })
@@ -63,14 +63,27 @@ export default function App() {
   const effectivePlaybackMode = playbackMode === 'annotated' && !hasAnnotatedPlayback ? 'original' : playbackMode;
 
   async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setPlaybackMode('original'); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
-  async function refreshEvents() { const next = await api.listEvents(); setEvents(next); setSelected(next[0] ?? null); }
+  async function refreshEvents() { const next = await api.listEvents(50); setEvents(next); setSelected(next[0] ?? null); }
   async function waitForJob(id: string) {
     for (let attempt = 0; attempt < 60; attempt += 1) {
       const current = await api.getJob(id); setJob(current);
       if (['completed', 'failed', 'cancelled'].includes(current.status)) return current;
-      await new Promise(resolve => window.setTimeout(resolve, 1000));
+      const delayMs = Math.min(1000 * (attempt + 1), 5000);
+      await new Promise(resolve => window.setTimeout(resolve, delayMs));
     }
     throw new Error('任务处理超时，请检查 Worker 日志');
+  }
+  async function monitorJob(id: string) {
+    try {
+      const finished = await waitForJob(id);
+      if (finished.status === 'failed') {
+        throw new Error('视频处理失败，请检查 Worker 日志');
+      }
+      await refreshEvents();
+      setJobs(await api.listJobs());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '视频任务处理失败');
+    }
   }
   async function upload(file?: File) {
     if (!file) return;
@@ -78,9 +91,7 @@ export default function App() {
     try {
       const created = await api.uploadVideo(file); setJob(created);
       if (created.status === 'pending') await api.processVideo(created.id);
-      const finished = await waitForJob(created.id);
-      if (finished.status === 'failed') throw new Error('视频处理失败，请检查 Worker 日志');
-      await refreshEvents(); setJobs(await api.listJobs());
+      void monitorJob(created.id);
     } catch (cause) { setError(cause instanceof Error ? cause.message : '视频任务处理失败'); }
     finally { setLoading(false); }
   }

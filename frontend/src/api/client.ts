@@ -27,7 +27,7 @@ export const api = {
     const response = await fetch(`/api/v1/events/${id}`, { method: 'DELETE' });
     if (!response.ok) throw new Error(`请求失败 (${response.status})`);
   },
-  listEvents: () => request<EventItem[]>('/api/v1/events'),
+  listEvents: (limit = 50) => request<EventItem[]>(`/api/v1/events?limit=${limit}`),
   searchEvents: (keyword: string) => request<EventItem[]>('/api/v1/events/search', { method: 'POST', body: JSON.stringify({ keyword }) }),
   listRules: () => request<EventRule[]>('/api/v1/event-rules'),
   updateRule: (rule: EventRule) => request<EventRule>(`/api/v1/event-rules/${rule.event_type}`, { method: 'PUT', body: JSON.stringify({ class_name: rule.class_name, min_confidence: rule.min_confidence, min_duration_ms: rule.min_duration_ms, geometry: rule.geometry ?? null, threshold: rule.threshold ?? null, enabled: rule.enabled ?? true }) }),

@@ -32,6 +32,22 @@ impl MediaStorage {
         Ok(path)
     }
 
+    pub async fn create_upload_temp(&self, _filename: &str) -> std::io::Result<PathBuf> {
+        tokio::fs::create_dir_all(&self.root).await?;
+        Ok(self.root.join(format!(".upload-{}.part", Uuid::new_v4())))
+    }
+
+    pub async fn finalize_upload(&self, temporary: PathBuf, filename: &str) -> std::io::Result<PathBuf> {
+        let destination = self.root.join(sanitize_filename(filename));
+        let _ = tokio::fs::remove_file(&destination).await;
+        tokio::fs::rename(&temporary, &destination).await?;
+        Ok(destination)
+    }
+
+    pub async fn discard_upload_temp(&self, temporary: &Path) {
+        let _ = tokio::fs::remove_file(temporary).await;
+    }
+
     pub async fn save_event_evidence(
         &self,
         event_id: Uuid,

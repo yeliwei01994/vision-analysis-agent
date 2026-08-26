@@ -141,7 +141,14 @@ impl Database {
     }
 
     pub async fn list_events(&self) -> Result<Vec<Event>, sqlx::Error> {
-        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, e.reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC LIMIT 200").fetch_all(&self.pool).await?;
+        self.list_events_limited(200).await
+    }
+
+    pub async fn list_events_limited(&self, limit: usize) -> Result<Vec<Event>, sqlx::Error> {
+        let limit = limit.clamp(1, 200);
+        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, e.reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC LIMIT ?")
+            .bind(limit as u64)
+            .fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| event_from_row(&row))

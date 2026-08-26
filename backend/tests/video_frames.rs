@@ -1,4 +1,4 @@
-use vision_event_api::video::{frame_timestamp_ms, DETECTION_INTERVAL_MS, REPLAY_FPS};
+use vision_event_api::video::{detection_interval_from, frame_timestamp_ms, DETECTION_INTERVAL_MS, REPLAY_FPS};
 
 #[test]
 fn parses_timestamp_from_ffmpeg_frame_name() {
@@ -8,6 +8,15 @@ fn parses_timestamp_from_ffmpeg_frame_name() {
 
 #[test]
 fn replay_uses_smooth_sampling_rate() {
-    assert_eq!(DETECTION_INTERVAL_MS, 100);
+    assert_eq!(DETECTION_INTERVAL_MS, 200);
     assert_eq!(REPLAY_FPS, 10);
+}
+
+#[test]
+fn detection_interval_accepts_safe_configuration_bounds() {
+    assert_eq!(detection_interval_from(None), 200);
+    assert_eq!(detection_interval_from(Some("100")), 100);
+    assert_eq!(detection_interval_from(Some("50")), 100);
+    assert_eq!(detection_interval_from(Some("99999")), 5000);
+    assert_eq!(detection_interval_from(Some("invalid")), 200);
 }

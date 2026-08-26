@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
 import App from './App';
 
@@ -25,6 +25,12 @@ test('shows empty event state when no events exist', async () => {
   expect(await screen.findByText('暂无匹配事件')).toBeInTheDocument();
 });
 
+test('loads a bounded event list after initialization', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  render(<App />);
+  await waitFor(() => expect(apiMock.listEvents).toHaveBeenCalledWith(50));
+});
+
 test('keeps the original metrics and upload progress panel', async () => {
   apiMock.listEvents.mockResolvedValueOnce([]);
   render(<App />);
@@ -43,6 +49,56 @@ test('upload control sends the selected video to the upload API', async () => {
   const file = new File(['video'], 'clip.mp4', { type: 'video/mp4' });
   fireEvent.change(screen.getByLabelText('导入视频任务'), { target: { files: [file] } });
   await waitFor(() => expect(apiMock.uploadVideo).toHaveBeenCalledWith(file));
+});
+
+test('backs off job polling while processing and stops after completion', async () => {
+  vi.useFakeTimers();
+  apiMock.listEvents.mockResolvedValue([]);
+  apiMock.listJobs.mockResolvedValue([]);
+  apiMock.uploadVideo.mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'pending', progress: 0 });
+  apiMock.processVideo.mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 1 });
+  apiMock.getJob
+    .mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 10 })
+    .mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 20 })
+    .mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'completed', progress: 100 });
+
+  render(<App />);
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText('导入视频任务'), {
+      target: { files: [new File(['video'], 'clip.mp4', { type: 'video/mp4' })] },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(apiMock.getJob).toHaveBeenCalledTimes(1);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(apiMock.getJob).toHaveBeenCalledTimes(2);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1999); });
+  expect(apiMock.getJob).toHaveBeenCalledTimes(2);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(apiMock.getJob).toHaveBeenCalledTimes(3);
+  expect(apiMock.getJob).toHaveBeenCalledWith('job-poll');
+  vi.useRealTimers();
+});
+
+test('releases the upload control while background processing continues', async () => {
+  apiMock.listEvents.mockResolvedValue([]);
+  apiMock.listJobs.mockResolvedValue([]);
+  apiMock.uploadVideo.mockResolvedValueOnce({ id: 'job-background', filename: 'clip.mp4', duration_ms: 0, status: 'pending', progress: 0 });
+  apiMock.processVideo.mockResolvedValueOnce({ id: 'job-background', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 1 });
+  apiMock.getJob.mockReturnValueOnce(new Promise(() => {}));
+
+  render(<App />);
+  fireEvent.change(screen.getByLabelText('导入视频任务'), {
+    target: { files: [new File(['video'], 'clip.mp4', { type: 'video/mp4' })] },
+  });
+
+  await waitFor(() => expect(apiMock.processVideo).toHaveBeenCalledWith('job-background'));
+  expect(screen.getByLabelText('导入视频任务')).not.toBeDisabled();
 });
 
 test('shows real evidence frames and lets the reviewer select a timeline point', async () => {
