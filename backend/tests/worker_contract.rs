@@ -135,6 +135,34 @@ async fn persisted_video_job_can_be_loaded_by_worker() {
 }
 
 #[tokio::test]
+async fn worker_refreshes_rules_saved_by_the_api_process() {
+    dotenvy::dotenv().ok();
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url)).await.unwrap();
+    database.migrate().await.unwrap();
+
+    let event_type = format!("test_rule_refresh_{}", Uuid::new_v4());
+    let mut saved_rule = vision_event_api::rules::EventRule::new(&event_type, "person", 0.25, 0);
+    saved_rule.geometry = Some(vision_event_api::rules::Geometry::polygon(vec![
+        [0.2, 0.2], [0.8, 0.2], [0.8, 0.8],
+    ]));
+    database.save_rule(&saved_rule).await.unwrap();
+
+    let state = AppState::default().with_integrations(Some(database.clone()), None);
+    worker::refresh_rules(&state).await.unwrap();
+    let loaded = state.event_rules().into_iter().find(|rule| rule.event_type == event_type).unwrap();
+    assert_eq!(loaded.geometry.unwrap().points[0], [0.2, 0.2]);
+
+    let _ = sqlx::query("DELETE FROM event_rules WHERE event_type = ?")
+        .bind(event_type)
+        .execute(&database.pool)
+        .await;
+}
+
+#[tokio::test]
 async fn failed_video_processing_is_persisted_to_mysql() {
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");

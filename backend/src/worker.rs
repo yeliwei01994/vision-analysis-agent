@@ -8,11 +8,26 @@ use crate::{
 use std::path::PathBuf;
 use uuid::Uuid;
 
+pub async fn refresh_rules(state: &AppState) -> Result<(), String> {
+    let Some(database) = &state.database else {
+        return Ok(());
+    };
+    let rules = database.list_rules().await.map_err(|error| error.to_string())?;
+    let mut current = state.rules.write().expect("rules lock poisoned");
+    for rule in rules {
+        current.insert(rule.event_type.clone(), rule);
+    }
+    Ok(())
+}
+
 pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     let Some(job) = state.job(job_id) else {
         eprintln!("worker job {job_id} not found in memory or database");
         return false;
     };
+    if let Err(error) = refresh_rules(&state).await {
+        eprintln!("worker failed to refresh event rules before job {job_id}: {error}");
+    }
     println!("worker processing job {job_id}: {}", job.filename);
     state.update_job(job_id, JobStatus::Processing, 35);
     let (frame_directory, frames, detector_version) = match job.source_uri.as_deref() {
