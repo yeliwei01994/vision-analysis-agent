@@ -6,6 +6,7 @@ import type { Detection, EventItem, EventRule, VideoJob } from './types/events';
 import './styles.css';
 
 const label = (status: EventItem['status']) => ({ unreviewed: '待复核', confirmed: '已确认', ignored: '已忽略', processing: '处理中', resolved: '已处置', closed: '已关闭' }[status]);
+const mediaUrl = (source: string) => `/media/${source.replaceAll('\\', '/').replace(/^\/?media\//, '')}`;
 const time = (ms: number) => `${Math.floor(ms / 60000).toString().padStart(2, '0')}:${Math.floor(ms / 1000 % 60).toString().padStart(2, '0')}`;
 const box = ([left, top, right, bottom]: Detection['bbox'], width: number, height: number) => {
   const legacyPixels = [left, top, right, bottom].some(value => value > 1);
@@ -39,6 +40,7 @@ export default function App() {
   const [reviewNote, setReviewNote] = useState('');
   const [disposition, setDisposition] = useState('');
   const [reviewHistory, setReviewHistory] = useState<import('./types/events').EventReview[]>([]);
+  const [playbackMode, setPlaybackMode] = useState<'original' | 'annotated'>('annotated');
 
   useEffect(() => {
     Promise.all([api.listEvents(), api.listRules(), api.listJobs()])
@@ -55,8 +57,12 @@ export default function App() {
   const frames = selected?.evidence.frames ?? [];
   const activeFrame = frames[frameIndex] ?? frames[0];
   const analysis = selected ? selected.analysis ?? fallbackAnalysis(selected) : null;
+  const selectedJob = selected ? jobs.find(item => item.id === selected.job_id) : null;
+  const hasAnnotatedPlayback = selectedJob?.annotated_video_status === 'ready' && Boolean(selectedJob.annotated_video_url);
+  const hasOriginalVideo = Boolean(selectedJob?.source_uri);
+  const effectivePlaybackMode = playbackMode === 'annotated' && !hasAnnotatedPlayback ? 'original' : playbackMode;
 
-  async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
+  async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setPlaybackMode('annotated'); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
   async function refreshEvents() { const next = await api.listEvents(); setEvents(next); setSelected(next[0] ?? null); }
   async function waitForJob(id: string) {
     for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -136,6 +142,7 @@ export default function App() {
           </div>
           <div className="detail-column">{selected ? <>
             <div className="detail-top"><div><p className="eyebrow">EVENT DETAIL / {selected.id}</p><h2>事件详情</h2></div><span className="status">{label(selected.status)}</span></div>
+            {selectedJob && <div className="playback-panel"><div className="playback-heading"><div><p className="eyebrow">VIDEO PLAYBACK</p><strong>视频回放</strong></div><div className="playback-tabs">{hasOriginalVideo && <button className={effectivePlaybackMode === 'original' ? 'active' : ''} onClick={() => setPlaybackMode('original')}>原始视频</button>}{hasAnnotatedPlayback && <button className={effectivePlaybackMode === 'annotated' ? 'active' : ''} onClick={() => setPlaybackMode('annotated')}>YOLO 检测回放</button>}</div></div>{selectedJob.annotated_video_status === 'pending' && <div className="playback-status">检测回放生成中，请稍候…</div>}{selectedJob.annotated_video_status === 'failed' && <div className="playback-status playback-error">检测回放生成失败：{selectedJob.annotated_video_error || '未知原因'}</div>}{effectivePlaybackMode === 'annotated' && hasAnnotatedPlayback ? <video className="playback-video" controls preload="metadata" aria-label="YOLO 检测回放"><source data-testid="playback-source" src={selectedJob.annotated_video_url ?? ''} type="video/mp4" /></video> : effectivePlaybackMode === 'original' && hasOriginalVideo ? <video className="playback-video" controls preload="metadata" aria-label="原始视频"><source data-testid="playback-source" src={mediaUrl(selectedJob.source_uri ?? '')} type="video/mp4" /></video> : !['pending', 'failed'].includes(selectedJob.annotated_video_status ?? '') && <div className="playback-status">暂无可用视频回放</div>}</div>}
             <div className="evidence">{activeFrame ? <><div className="evidence-stage">{failedEvidenceUrls.includes(activeFrame.image_url) ? <div className="evidence-unavailable"><strong>证据文件不可用</strong><button aria-label="重新加载证据图片" onClick={() => setFailedEvidenceUrls(urls => urls.filter(url => url !== activeFrame.image_url))}>重新加载</button></div> : <><img src={activeFrame.image_url} alt={`${preciseTime(activeFrame.timestamp_ms)} 的检测证据`} onLoad={event => setEvidenceSize({ width: event.currentTarget.naturalWidth || 1, height: event.currentTarget.naturalHeight || 1 })} onError={() => setFailedEvidenceUrls(urls => urls.includes(activeFrame.image_url) ? urls : [...urls, activeFrame.image_url])} />{activeFrame.detections.map((detection, index) => <span className="detection-box" key={index} style={box(detection.bbox, evidenceSize.width, evidenceSize.height)}>{detection.class_name} {(detection.confidence * 100).toFixed(0)}%</span>)}</>}</div><div className="timeline">{frames.map((item, index) => <button key={item.image_url} aria-label={`证据帧 ${preciseTime(item.timestamp_ms)}`} aria-pressed={index === frameIndex} onClick={() => { setFrameIndex(index); setFailedEvidenceUrls([]); }}>{preciseTime(item.timestamp_ms)}</button>)}</div></> : <div className="evidence-empty">暂无可用抽帧证据</div>}</div>
             <div className="detail-info"><div><span>事件类型</span><strong>{displayEventType(selected.event_type)}</strong><small>{selected.event_type} · {selected.rule_version ?? 'rule-v1'}</small></div><div><span>严重等级</span><strong className="danger">{selected.severity.toUpperCase()}</strong></div><div><span>检测摘要</span><strong>{detectionSummary(selected)}</strong></div><div><span>模型置信度</span><strong>{(selected.confidence * 100).toFixed(1)}%</strong></div></div>
             <div className="analysis"><p className="eyebrow">MODEL ANALYSIS</p><h3>{analysis?.summary}</h3><p>{analysis?.suggestion}</p><small>来源：{analysis?.report_source} · 检测器：{selected.detector_version}</small></div>

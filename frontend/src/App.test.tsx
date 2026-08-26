@@ -146,3 +146,23 @@ test('can rename and delete a completed video job', async () => {
   fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
   await waitFor(() => expect(apiMock.deleteJob).toHaveBeenCalledWith('job-1'));
 });
+
+test('shows original and YOLO playback choices for the selected event job', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([event]);
+  apiMock.listJobs.mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: '/media/clip.mp4', annotated_video_url: '/media/annotated/job-1.mp4', annotated_video_status: 'ready', annotated_video_error: null }]);
+  render(<App />);
+
+  expect(await screen.findByRole('button', { name: 'YOLO 检测回放' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '原始视频' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'YOLO 检测回放' }));
+  expect(screen.getByTestId('playback-source')).toHaveAttribute('src', '/media/annotated/job-1.mp4');
+});
+
+test('shows playback generation failure without hiding event evidence', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([event]);
+  apiMock.listJobs.mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: '/media/clip.mp4', annotated_video_url: null, annotated_video_status: 'failed', annotated_video_error: 'ffmpeg 不可用' }]);
+  render(<App />);
+
+  expect(await screen.findByText('检测回放生成失败：ffmpeg 不可用')).toBeInTheDocument();
+  expect(screen.getByText('暂无可用抽帧证据')).toBeInTheDocument();
+});

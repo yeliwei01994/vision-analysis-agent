@@ -149,4 +149,13 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 .evidence-unavailable button { padding: 8px 12px; border: 1px solid #2ed2b5; background: transparent; color: #56e6cd; cursor: pointer; }
 .status { transition: color 160ms ease, background-color 160ms ease, transform 160ms ease; }
 .actions button { transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease; }
+.playback-panel { margin-bottom: 18px; border: 1px solid #203447; background: #0d1720; padding: 14px; }
+.playback-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.playback-heading .eyebrow { margin: 0 0 4px; }
+.playback-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.playback-tabs button { border: 1px solid #294256; background: transparent; color: #92a8bd; padding: 8px 12px; cursor: pointer; }
+.playback-tabs button.active { border-color: #56e0bb; color: #56e0bb; }
+.playback-video { display: block; width: 100%; max-height: 420px; background: #050a0f; }
+.playback-status { min-height: 72px; display: grid; place-items: center; color: #92a8bd; border: 1px dashed #294256; }
+.playback-error { color: #ff8f7c; }
 @media (prefers-reduced-motion: reduce) { .feedback, .status, .actions button { transition: none; } }
