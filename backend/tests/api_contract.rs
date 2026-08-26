@@ -24,6 +24,9 @@ async fn media_route_serves_evidence_images_and_rejects_unsafe_paths() {
     let image = root.join("evidence").join("event-1").join("frame-0001.jpg");
     tokio::fs::create_dir_all(image.parent().unwrap()).await.unwrap();
     tokio::fs::write(&image, b"jpeg-evidence").await.unwrap();
+    let playback = root.join("annotated").join("job-1.mp4");
+    tokio::fs::create_dir_all(playback.parent().unwrap()).await.unwrap();
+    tokio::fs::write(&playback, b"mp4-playback").await.unwrap();
     let mut state = AppState::default();
     state.storage = MediaStorage::new(root);
     let router = api::router(state);
@@ -37,11 +40,41 @@ async fn media_route_serves_evidence_images_and_rejects_unsafe_paths() {
     assert_eq!(image_response.headers()[CONTENT_TYPE], "image/jpeg");
     assert_eq!(image_response.headers()[CACHE_CONTROL], "private, max-age=3600");
 
+    let playback_response = router
+        .clone()
+        .oneshot(Request::get("/media/annotated/job-1.mp4").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(playback_response.status(), StatusCode::OK);
+    assert_eq!(playback_response.headers()[CONTENT_TYPE], "video/mp4");
+
     let unsafe_response = router
         .oneshot(Request::get("/media/%2E%2E/Cargo.toml").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert!(!unsafe_response.status().is_success());
+}
+
+#[tokio::test]
+async fn deleting_a_job_removes_only_its_annotated_playback() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("media");
+    let mut state = AppState::default();
+    state.storage = MediaStorage::new(root.clone());
+    let job = state.create_job("delete-playback.mp4".into(), 1_000);
+    let playback = root.join("annotated").join(format!("{}.mp4", job.id));
+    tokio::fs::create_dir_all(playback.parent().unwrap()).await.unwrap();
+    tokio::fs::write(&playback, b"mp4-playback").await.unwrap();
+    let original = root.join("delete-playback.mp4");
+    tokio::fs::write(&original, b"original-video").await.unwrap();
+
+    let response = api::router(state)
+        .oneshot(Request::delete(format!("/api/v1/jobs/{}", job.id)).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(!playback.exists());
+    assert!(original.exists());
 }
 
 #[tokio::test]

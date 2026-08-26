@@ -6,7 +6,7 @@ import type { Detection, EventItem, EventRule, VideoJob } from './types/events';
 import './styles.css';
 
 const label = (status: EventItem['status']) => ({ unreviewed: '待复核', confirmed: '已确认', ignored: '已忽略', processing: '处理中', resolved: '已处置', closed: '已关闭' }[status]);
-const mediaUrl = (source: string) => `/media/${source.replaceAll('\\', '/').replace(/^\/?media\//, '')}`;
+const mediaUrl = (source: string) => `/media/${source.replace(/\\/g, '/').replace(/^\/?media\//, '')}`;
 const time = (ms: number) => `${Math.floor(ms / 60000).toString().padStart(2, '0')}:${Math.floor(ms / 1000 % 60).toString().padStart(2, '0')}`;
 const box = ([left, top, right, bottom]: Detection['bbox'], width: number, height: number) => {
   const legacyPixels = [left, top, right, bottom].some(value => value > 1);

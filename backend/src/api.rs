@@ -270,11 +270,19 @@ async fn delete_job(
             crate::persistence::JobMutationError::Conflict => ApiError::Conflict,
             crate::persistence::JobMutationError::Database(_) => ApiError::Internal,
         })?;
+        if let Err(error) = state.storage.delete_annotated_video(id).await {
+            eprintln!("failed to delete annotated playback for job {id}: {error}");
+        }
         state.forget_job(id);
         return Ok(StatusCode::NO_CONTENT);
     }
     match state.delete_job(id) {
-        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Ok(()) => {
+            if let Err(error) = state.storage.delete_annotated_video(id).await {
+                eprintln!("failed to delete annotated playback for job {id}: {error}");
+            }
+            Ok(StatusCode::NO_CONTENT)
+        }
         Err(crate::domain::JobStatus::Processing) => Err(ApiError::Conflict),
         Err(_) => Err(ApiError::NotFound),
     }
