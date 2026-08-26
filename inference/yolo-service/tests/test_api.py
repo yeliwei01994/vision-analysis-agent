@@ -58,3 +58,32 @@ def test_frame_inference_returns_detection_contract():
             }
         ],
     }
+
+
+def test_batch_inference_returns_one_result_per_frame():
+    image = Image.new("RGB", (32, 32), color="white")
+    first = BytesIO()
+    second = BytesIO()
+    image.save(first, format="JPEG")
+    image.save(second, format="JPEG")
+
+    class BatchFakeDetector(FakeDetector):
+        def predict_batch(self, image_bytes, timestamps_ms):
+            return [
+                self.predict(image_bytes[0], timestamps_ms[0]),
+                self.predict(image_bytes[1], timestamps_ms[1]),
+            ]
+
+    set_detector(BatchFakeDetector())
+    response = client.post(
+        "/v1/infer/batch",
+        files=[
+            ("files", ("frame-0001.jpg", first.getvalue(), "image/jpeg")),
+            ("files", ("frame-0002.jpg", second.getvalue(), "image/jpeg")),
+        ],
+        data={"metadata": '[{"frame_id":"frame-0001","timestamp_ms":0},{"frame_id":"frame-0002","timestamp_ms":200}]'},
+    )
+
+    assert response.status_code == 200
+    assert [item["frame_id"] for item in response.json()["items"]] == ["frame-0001", "frame-0002"]
+    assert [item["timestamp_ms"] for item in response.json()["items"]] == [0, 200]

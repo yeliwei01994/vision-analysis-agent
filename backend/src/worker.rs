@@ -3,7 +3,7 @@ use crate::{
     domain::{Detection, Event, Evidence, JobStatus},
     rules::RuleEngine,
     video,
-    yolo::YoloDetector,
+    yolo::{self, YoloDetector},
 };
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -30,6 +30,10 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     }
     println!("worker processing job {job_id}: {}", job.filename);
     state.update_job(job_id, JobStatus::Processing, 35);
+    let source_metadata = match job.source_uri.as_deref() {
+        Some(source_uri) => video::probe(std::path::Path::new(source_uri)).await,
+        None => video::VideoMetadata::default(),
+    };
     let (frame_directory, frames, detector_version) = match job.source_uri.as_deref() {
         Some(source_uri) => match process_video(source_uri).await {
             Ok(result) => result,
@@ -90,8 +94,12 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         }
     }
     }
-    let playback_duration_ms = job.duration_ms.max(frames.len() as u64 * video::detection_interval_ms());
-    let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms).await;
+    let playback_duration_ms = video::playback_duration_ms(source_metadata.duration_ms, job.duration_ms);
+    let playback_fps = source_metadata.frame_rate.unwrap_or(video::REPLAY_FPS as f64).max(1.0);
+    let playback_frame_count = source_metadata.frame_count.or_else(|| {
+        (playback_duration_ms > 0).then_some((playback_duration_ms as f64 / 1000.0 * playback_fps).round() as u64)
+    });
+    let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms, playback_fps, playback_frame_count).await;
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         match playback_result {
             Ok(url) => {
@@ -243,35 +251,68 @@ async fn process_video(
     let detector = YoloDetector::from_env().map_err(|error| error.to_string())?;
     let mut frames = Vec::new();
     let mut model_version = None;
-    for (index, frame_path) in frame_paths.iter().enumerate() {
-        let filename = frame_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| "invalid frame filename".to_string())?;
-        if video::frame_timestamp_ms(filename).is_none() {
-            return Err(format!("invalid frame filename: {filename}"));
-        }
-        let timestamp_ms = index as u64 * interval_ms;
-        let response = detector.detect_frame(frame_path, timestamp_ms).await?;
-        println!(
-            "YOLO response: frame={}, timestamp_ms={}, detections={}, classes={:?}",
-            filename,
-            timestamp_ms,
-            response.detections.len(),
-            response
-                .detections
+    let batch_size = yolo::batch_size();
+    let concurrency = yolo::concurrency();
+    let batches = frame_paths
+        .chunks(batch_size)
+        .enumerate()
+        .map(|(batch_index, paths)| {
+            let batch = paths
                 .iter()
-                .map(|detection| detection.class_name.as_str())
-                .collect::<Vec<_>>()
-        );
-        model_version = Some(response.model_version.clone());
-        let mut detected = response.into_frame_detections();
-        let frame_size = image::image_dimensions(frame_path).ok();
-        for detection in &mut detected {
-            normalize_detection_bbox(&mut detection.detection, frame_size);
-            detection.frame_path = Some(frame_path.clone());
+                .enumerate()
+                .map(|(offset, path)| (path.clone(), (batch_index * batch_size + offset) as u64 * interval_ms))
+                .collect::<Vec<_>>();
+            (batch_index, batch)
+        })
+        .collect::<Vec<_>>();
+    let mut pending = tokio::task::JoinSet::new();
+    let mut completed = Vec::with_capacity(batches.len());
+    for (batch_index, batch) in batches {
+        while pending.len() >= concurrency {
+            let result = pending
+                .join_next()
+                .await
+                .ok_or_else(|| "YOLO batch task ended unexpectedly".to_string())?
+                .map_err(|error| format!("YOLO batch task failed: {error}"))?;
+            completed.push(result?);
         }
-        frames.extend(detected);
+        let detector = detector.clone();
+        pending.spawn(async move { Ok::<_, String>((batch_index, detector.detect_batch(&batch).await?)) });
+    }
+    while let Some(result) = pending.join_next().await {
+        let result = result.map_err(|error| format!("YOLO batch task failed: {error}"))?;
+        completed.push(result?);
+    }
+    completed.sort_by_key(|(batch_index, _)| *batch_index);
+    for (_, batch_results) in completed {
+        for (frame_path, response) in batch_results {
+            let filename = frame_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "invalid frame filename".to_string())?;
+            if video::frame_timestamp_ms(filename).is_none() {
+                return Err(format!("invalid frame filename: {filename}"));
+            }
+            println!(
+                "YOLO response: frame={}, timestamp_ms={}, detections={}, classes={:?}",
+                filename,
+                response.timestamp_ms,
+                response.detections.len(),
+                response
+                    .detections
+                    .iter()
+                    .map(|detection| detection.class_name.as_str())
+                    .collect::<Vec<_>>()
+            );
+            model_version = Some(response.model_version.clone());
+            let mut detected = response.into_frame_detections();
+            let frame_size = image::image_dimensions(&frame_path).ok();
+            for detection in &mut detected {
+                normalize_detection_bbox(&mut detection.detection, frame_size);
+                detection.frame_path = Some(frame_path.clone());
+            }
+            frames.extend(detected);
+        }
     }
     Ok((
         Some(directory),

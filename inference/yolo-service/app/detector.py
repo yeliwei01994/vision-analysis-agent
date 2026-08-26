@@ -26,16 +26,25 @@ class YoloDetector:
         return self._model
 
     def predict(self, image_bytes: bytes, timestamp_ms: int) -> InferenceResponse:
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        return self._predict_images([Image.open(io.BytesIO(image_bytes)).convert("RGB")], [timestamp_ms])[0]
+
+    def predict_batch(self, image_bytes: list[bytes], timestamps_ms: list[int]) -> list[InferenceResponse]:
+        if len(image_bytes) != len(timestamps_ms):
+            raise ValueError("image_bytes and timestamps_ms must have the same length")
+        images = [Image.open(io.BytesIO(item)).convert("RGB") for item in image_bytes]
+        return self._predict_images(images, timestamps_ms)
+
+    def _predict_images(self, images: list[Image.Image], timestamps_ms: list[int]) -> list[InferenceResponse]:
         results = self._load().predict(
-            source=image,
+            source=images,
             conf=self.confidence,
             device=self.device,
             verbose=False,
         )
-        detections: list[dict[str, Any]] = []
-        width, height = image.size
-        for result in results:
+        responses: list[InferenceResponse] = []
+        for image, timestamp_ms, result in zip(images, timestamps_ms, results):
+            detections: list[dict[str, Any]] = []
+            width, height = image.size
             names = result.names
             boxes = result.boxes
             for index in range(len(boxes)):
@@ -53,10 +62,11 @@ class YoloDetector:
                         "track_id": None,
                     }
                 )
-        print(
-            f"YOLO inference: timestamp_ms={timestamp_ms}, "
-            f"detections={len(detections)}, "
-            f"classes={[item['class_name'] for item in detections]}",
-            flush=True,
-        )
-        return InferenceResponse(model_version=self.version, timestamp_ms=timestamp_ms, detections=detections)
+            print(
+                f"YOLO inference: timestamp_ms={timestamp_ms}, "
+                f"detections={len(detections)}, "
+                f"classes={[item['class_name'] for item in detections]}",
+                flush=True,
+            )
+            responses.append(InferenceResponse(model_version=self.version, timestamp_ms=timestamp_ms, detections=detections))
+        return responses

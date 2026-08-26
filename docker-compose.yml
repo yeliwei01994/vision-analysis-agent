@@ -24,6 +24,8 @@ services:
       DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
       REDIS_URL: redis://redis:6379
       YOLO_URL: http://yolo:9000
+      YOLO_BATCH_SIZE: "4"
+      YOLO_CONCURRENCY: "2"
     volumes: ["media_data:/app/media"]
     depends_on:
       mysql: { condition: service_healthy }

@@ -87,6 +87,8 @@ impl MediaStorage {
         job_id: Uuid,
         frames: &[crate::rules::FrameDetection],
         duration_ms: u64,
+        output_fps: f64,
+        output_frame_count: Option<u64>,
     ) -> Result<String, String> {
         let output_directory = self.root.join("annotated");
         tokio::fs::create_dir_all(&output_directory)
@@ -106,13 +108,24 @@ impl MediaStorage {
             let _ = tokio::fs::remove_dir_all(&temporary).await;
             return Err("没有可用于生成回放的视频帧".into());
         }
-        for (index, (source, (timestamp_ms, detections))) in grouped.into_iter().enumerate() {
-            let destination = temporary.join(format!("frame-{:010}.jpg", index + 1));
-            annotate_frame(&source, &destination, &detections, timestamp_ms)
+        let annotated = grouped.into_iter().collect::<Vec<_>>();
+        for (index, (source, (timestamp_ms, detections))) in annotated.iter().enumerate() {
+            let destination = temporary.join(format!("sample-{:010}.jpg", index + 1));
+            annotate_frame(source, &destination, detections, *timestamp_ms)
                 .map_err(|error| format!("标注视频帧失败：{error}"))?;
         }
+        let output_count = output_frame_count.unwrap_or(annotated.len() as u64).max(1) as usize;
+        for index in 0..output_count {
+            let sample_index = (index * annotated.len() / output_count).min(annotated.len() - 1);
+            let source = temporary.join(format!("sample-{:010}.jpg", sample_index + 1));
+            let destination = temporary.join(format!("frame-{:010}.jpg", index + 1));
+            tokio::fs::copy(source, destination).await.map_err(|error| error.to_string())?;
+        }
+        for index in 0..annotated.len() {
+            let _ = tokio::fs::remove_file(temporary.join(format!("sample-{:010}.jpg", index + 1))).await;
+        }
         let output = output_directory.join(format!("{job_id}.mp4"));
-        let result = video::encode_frames(&temporary, &output, duration_ms).await;
+        let result = video::encode_frames(&temporary, &output, duration_ms, output_fps, output_frame_count).await;
         let _ = tokio::fs::remove_dir_all(&temporary).await;
         result.map(|_| format!("/media/annotated/{job_id}.mp4"))
     }

@@ -12,3 +12,19 @@ class InferenceResponse(BaseModel):
     model_version: str
     timestamp_ms: int = Field(ge=0)
     detections: list[Detection]
+
+
+class BatchFrameMetadata(BaseModel):
+    frame_id: str = Field(min_length=1)
+    timestamp_ms: int = Field(ge=0)
+
+
+class BatchInferenceItem(BaseModel):
+    frame_id: str = Field(min_length=1)
+    timestamp_ms: int = Field(ge=0)
+    detections: list[Detection]
+
+
+class BatchInferenceResponse(BaseModel):
+    model_version: str
+    items: list[BatchInferenceItem]

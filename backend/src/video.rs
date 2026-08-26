@@ -21,6 +21,8 @@ pub struct VideoMetadata {
     pub duration_ms: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub frame_rate: Option<f64>,
+    pub frame_count: Option<u64>,
     pub probe_source: String,
 }
 
@@ -49,6 +51,21 @@ pub async fn probe(path: &Path) -> VideoMetadata {
 pub fn frame_timestamp_ms(filename: &str) -> Option<u64> {
     let stem = Path::new(filename).file_stem()?.to_str()?;
     stem.strip_prefix("frame-")?.parse().ok()
+}
+
+pub fn parse_frame_rate(value: &str) -> Option<f64> {
+    let (numerator, denominator) = value.split_once('/')?;
+    let numerator = numerator.parse::<f64>().ok()?;
+    let denominator = denominator.parse::<f64>().ok()?;
+    (denominator > 0.0).then_some(numerator / denominator)
+}
+
+pub fn playback_duration_ms(source_duration_ms: u64, job_duration_ms: u64) -> u64 {
+    if source_duration_ms > 0 {
+        source_duration_ms
+    } else {
+        job_duration_ms
+    }
 }
 
 pub async fn extract_frames(
@@ -94,14 +111,24 @@ pub async fn encode_frames(
     input_directory: &Path,
     output_path: &Path,
     duration_ms: u64,
+    output_fps: f64,
+    output_frame_count: Option<u64>,
 ) -> Result<(), String> {
     let pattern = input_directory.join("frame-%010d.jpg");
     let duration = format!("{:.3}", duration_ms as f64 / 1000.0);
-    let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-framerate", &REPLAY_FPS.to_string(), "-start_number", "1", "-i"])
+    let fps = format!("{output_fps:.6}");
+    let frame_count = output_frame_count.map(|value| value.to_string());
+    let mut command = Command::new("ffmpeg");
+    command
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-framerate", &fps, "-start_number", "1", "-i"])
         .arg(&pattern)
         .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t"])
         .arg(duration)
+        ;
+    if let Some(frame_count) = frame_count.as_deref() {
+        command.args(["-frames:v", frame_count]);
+    }
+    let output = command
         .arg(output_path)
         .output()
         .await
@@ -139,6 +166,14 @@ fn parse_probe(bytes: &[u8]) -> VideoMetadata {
             .and_then(|v| v.get("height"))
             .and_then(|v| v.as_u64())
             .map(|v| v as u32),
+        frame_rate: stream
+            .and_then(|v| v.get("avg_frame_rate"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_frame_rate),
+        frame_count: stream
+            .and_then(|v| v.get("nb_frames"))
+            .and_then(|v| v.as_str())
+            .and_then(|v| v.parse::<u64>().ok()),
         probe_source: "ffprobe".into(),
     }
 }

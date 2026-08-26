@@ -134,11 +134,18 @@ async fn annotated_video_contains_the_full_detection_frame_sequence() {
     ];
 
     let job_id = Uuid::new_v4();
-    let url = storage.save_annotated_video(job_id, &frames, 1_000).await.unwrap();
+    let url = storage.save_annotated_video(job_id, &frames, 1_000, 10.0, Some(10)).await.unwrap();
     assert_eq!(url, format!("/media/annotated/{job_id}.mp4"));
     let output = temporary.path().join("media").join("annotated").join(format!("{job_id}.mp4"));
     assert!(output.exists());
     assert!(tokio::fs::metadata(output).await.unwrap().len() > 0);
+    let probe = tokio::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames", "-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(temporary.path().join("media").join("annotated").join(format!("{job_id}.mp4")))
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "10");
 }
 
 #[tokio::test]
