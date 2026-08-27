@@ -1,12 +1,36 @@
 use crate::{
     application::AppState,
     domain::{Detection, Event, Evidence, JobStatus},
+    performance::PerformanceSummary,
     rules::RuleEngine,
     video,
     yolo::{self, YoloDetector},
 };
 use std::path::PathBuf;
+use std::time::Instant;
 use uuid::Uuid;
+
+pub fn build_performance_summary(
+    job_id: Uuid,
+    frames: usize,
+    batches: usize,
+    detections: usize,
+    events: usize,
+) -> PerformanceSummary {
+    let mut summary = PerformanceSummary::new(job_id);
+    summary.frames = frames;
+    summary.batches = batches;
+    summary.detections = detections;
+    summary.events = events;
+    summary.batch_size = yolo::batch_size();
+    summary.concurrency = yolo::concurrency();
+    summary
+}
+
+fn emit_performance_summary(summary: &mut PerformanceSummary, started_at: Instant) {
+    summary.total_ms = started_at.elapsed().as_millis();
+    eprintln!("performance_summary {}", summary.to_json_line());
+}
 
 pub async fn refresh_rules(state: &AppState) -> Result<(), String> {
     let Some(database) = &state.database else {
@@ -21,6 +45,10 @@ pub async fn refresh_rules(state: &AppState) -> Result<(), String> {
 }
 
 pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
+    let started_at = Instant::now();
+    let mut performance = PerformanceSummary::new(job_id);
+    performance.batch_size = yolo::batch_size();
+    performance.concurrency = yolo::concurrency();
     let Some(job) = state.job(job_id) else {
         eprintln!("worker job {job_id} not found in memory or database");
         return false;
@@ -30,17 +58,21 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     }
     println!("worker processing job {job_id}: {}", job.filename);
     state.update_job(job_id, JobStatus::Processing, 35);
+    let probe_started = Instant::now();
     let source_metadata = match job.source_uri.as_deref() {
         Some(source_uri) => video::probe(std::path::Path::new(source_uri)).await,
         None => video::VideoMetadata::default(),
     };
+    performance.add_stage_ms("probe", probe_started.elapsed().as_millis());
     let (frame_directory, frames, detector_version) = match job.source_uri.as_deref() {
-        Some(source_uri) => match process_video(source_uri).await {
+        Some(source_uri) => match process_video(source_uri, &mut performance).await {
             Ok(result) => result,
             Err(error) => {
                 eprintln!("video job {job_id} failed: {error}");
+                performance.errors += 1;
                 state.update_job(job_id, JobStatus::Failed, 100);
                 persist_job_state(&state, job_id, "failed").await;
+                emit_performance_summary(&mut performance, started_at);
                 return false;
             }
         },
@@ -53,6 +85,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         current.annotated_video_url = None;
     }
     persist_job_state(&state, job_id, "playback pending").await;
+    let rules_started = Instant::now();
     let rules = state.event_rules();
     for rule in rules.into_iter().filter(|rule| rule.enabled) {
     for candidate in merge_rule_events(RuleEngine::new(rule).evaluate(&frames), 3_000) {
@@ -74,6 +107,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
             .map(|(timestamp_ms, path, detections)| (*timestamp_ms, path.as_path(), detections.clone()))
             .collect::<Vec<_>>();
         if !evidence_frames.is_empty() {
+            let evidence_started = Instant::now();
             event.evidence = match state.storage.save_event_evidence(event.id, &evidence_frames).await {
                 Ok(evidence) => evidence,
                 Err(error) => {
@@ -81,6 +115,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
                     Evidence::default()
                 }
             };
+            performance.add_stage_ms("evidence_save", evidence_started.elapsed().as_millis());
         }
         state
             .events
@@ -92,14 +127,18 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
                 eprintln!("failed to save event {} for job {job_id}: {error}", event.id);
             }
         }
+        performance.events += 1;
     }
     }
+    performance.add_stage_ms("rule_evaluation", rules_started.elapsed().as_millis());
     let playback_duration_ms = video::playback_duration_ms(source_metadata.duration_ms, job.duration_ms);
     let playback_fps = source_metadata.frame_rate.unwrap_or(video::REPLAY_FPS as f64).max(1.0);
     let playback_frame_count = source_metadata.frame_count.or_else(|| {
         (playback_duration_ms > 0).then_some((playback_duration_ms as f64 / 1000.0 * playback_fps).round() as u64)
     });
+    let encode_started = Instant::now();
     let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms, playback_fps, playback_frame_count).await;
+    performance.add_stage_ms("annotated_video_encode", encode_started.elapsed().as_millis());
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         match playback_result {
             Ok(url) => {
@@ -127,6 +166,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
             }
         }
     }
+    emit_performance_summary(&mut performance, started_at);
     true
 }
 
@@ -244,10 +284,14 @@ async fn persist_job_state(state: &AppState, job_id: Uuid, reason: &str) {
 
 async fn process_video(
     source_uri: &str,
+    performance: &mut PerformanceSummary,
 ) -> Result<(Option<std::path::PathBuf>, Vec<crate::rules::FrameDetection>, String), String> {
     let interval_ms = video::detection_interval_ms();
+    let extract_started = Instant::now();
     let (directory, frame_paths) =
         video::extract_frames(std::path::Path::new(source_uri), interval_ms).await?;
+    performance.add_stage_ms("frame_extract", extract_started.elapsed().as_millis());
+    performance.frames = frame_paths.len();
     let detector = YoloDetector::from_env().map_err(|error| error.to_string())?;
     let mut frames = Vec::new();
     let mut model_version = None;
@@ -265,6 +309,8 @@ async fn process_video(
             (batch_index, batch)
         })
         .collect::<Vec<_>>();
+    performance.batches = batches.len();
+    let yolo_started = Instant::now();
     let mut pending = tokio::task::JoinSet::new();
     let mut completed = Vec::with_capacity(batches.len());
     for (batch_index, batch) in batches {
@@ -304,6 +350,7 @@ async fn process_video(
                     .map(|detection| detection.class_name.as_str())
                     .collect::<Vec<_>>()
             );
+            performance.detections += response.detections.len();
             model_version = Some(response.model_version.clone());
             let mut detected = response.into_frame_detections();
             let frame_size = image::image_dimensions(&frame_path).ok();
@@ -314,6 +361,7 @@ async fn process_video(
             frames.extend(detected);
         }
     }
+    performance.add_stage_ms("yolo_inference", yolo_started.elapsed().as_millis());
     Ok((
         Some(directory),
         frames,

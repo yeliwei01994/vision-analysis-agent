@@ -34,6 +34,17 @@ fn frame(timestamp_ms: u64, confidence: f32) -> FrameDetection {
 }
 
 #[test]
+fn performance_summary_contains_pipeline_counters() {
+    let summary = worker::build_performance_summary(Uuid::nil(), 300, 75, 420, 8);
+    assert_eq!(summary.frames, 300);
+    assert_eq!(summary.batches, 75);
+    assert_eq!(summary.detections, 420);
+    assert_eq!(summary.events, 8);
+    assert!(summary.batch_size >= 1);
+    assert!(summary.concurrency >= 1);
+}
+
+#[test]
 fn merges_matching_candidates_within_the_gap() {
     let events = worker::merge_rule_events(
         vec![candidate(1_000, 1_500, 0.4), candidate(0, 500, 0.8)],
