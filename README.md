@@ -188,3 +188,7 @@ docker compose up -d yolo
 ```powershell
 .\scripts\e2e-yolo.ps1
 ```
+
+## 性能基准
+
+视频分析性能可以使用 [视频性能基准测试](docs/performance/video-benchmark.md) 对固定视频和不同 YOLO batch/并发配置进行量化，结果会输出为 JSON 和 CSV。
