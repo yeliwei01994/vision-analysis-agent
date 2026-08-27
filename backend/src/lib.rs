@@ -3,6 +3,7 @@ pub mod api;
 pub mod application;
 pub mod domain;
 pub mod persistence;
+pub mod performance;
 pub mod queue;
 pub mod rules;
 pub mod storage;
