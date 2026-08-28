@@ -45,6 +45,14 @@ fn performance_summary_contains_pipeline_counters() {
 }
 
 #[test]
+fn annotation_concurrency_stays_within_safe_bounds() {
+    assert_eq!(vision_event_api::storage::annotation_concurrency_from(Some("0")), 1);
+    assert_eq!(vision_event_api::storage::annotation_concurrency_from(Some("3")), 3);
+    assert_eq!(vision_event_api::storage::annotation_concurrency_from(Some("99")), 8);
+    assert!(vision_event_api::storage::annotation_concurrency() >= 1);
+}
+
+#[test]
 fn merges_matching_candidates_within_the_gap() {
     let events = worker::merge_rule_events(
         vec![candidate(1_000, 1_500, 0.4), candidate(0, 500, 0.8)],

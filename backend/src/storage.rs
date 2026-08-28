@@ -6,6 +6,23 @@ use uuid::Uuid;
 use crate::domain::{Detection, Evidence, EvidenceFrame};
 use crate::video;
 
+pub fn annotation_concurrency_from(value: Option<&str>) -> usize {
+    value
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(available_annotation_parallelism())
+        .clamp(1, 8)
+}
+
+pub fn annotation_concurrency() -> usize {
+    annotation_concurrency_from(std::env::var("ANNOTATION_CONCURRENCY").ok().as_deref())
+}
+
+fn available_annotation_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+}
+
 #[derive(Clone)]
 pub struct MediaStorage {
     root: PathBuf,
@@ -143,10 +160,44 @@ impl MediaStorage {
         }
         let annotated = grouped.into_iter().collect::<Vec<_>>();
         let annotate_started = Instant::now();
-        for (index, (source, (timestamp_ms, detections))) in annotated.iter().enumerate() {
-            let destination = temporary.join(format!("sample-{:010}.jpg", index + 1));
-            annotate_frame(source, &destination, detections, *timestamp_ms)
-                .map_err(|error| format!("标注视频帧失败：{error}"))?;
+        let annotation_jobs = annotated
+            .iter()
+            .enumerate()
+            .map(|(index, (source, (timestamp_ms, detections)))| {
+                (
+                    source.clone(),
+                    temporary.join(format!("sample-{:010}.jpg", index + 1)),
+                    *timestamp_ms,
+                    detections.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut pending = tokio::task::JoinSet::new();
+        let mut annotation_error = None;
+        for (source, destination, timestamp_ms, detections) in annotation_jobs {
+            while pending.len() >= annotation_concurrency() {
+                let result = pending
+                    .join_next()
+                    .await
+                    .ok_or_else(|| "标注任务意外结束".to_string())?
+                    .map_err(|error| format!("标注任务失败：{error}"))?;
+                if let Err(error) = result {
+                    annotation_error = Some(error);
+                }
+            }
+            pending.spawn_blocking(move || {
+                annotate_frame(&source, &destination, &detections, timestamp_ms)
+                    .map_err(|error| format!("标注视频帧失败：{error}"))
+            });
+        }
+        while let Some(result) = pending.join_next().await {
+            let result = result.map_err(|error| format!("标注任务失败：{error}"))?;
+            if let Err(error) = result {
+                annotation_error = Some(error);
+            }
+        }
+        if let Some(error) = annotation_error {
+            return Err(error);
         }
         let annotate_frames_ms = annotate_started.elapsed().as_millis();
         let output_count = output_frame_count.unwrap_or(annotated.len() as u64).max(1) as usize;
