@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::domain::{Detection, Evidence, EvidenceFrame};
@@ -8,6 +9,19 @@ use crate::video;
 #[derive(Clone)]
 pub struct MediaStorage {
     root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AnnotatedVideoTimings {
+    pub annotate_frames_ms: u128,
+    pub duplicate_frames_ms: u128,
+    pub ffmpeg_encode_ms: u128,
+    pub cleanup_ms: u128,
+}
+
+pub struct AnnotatedVideoResult {
+    pub url: String,
+    pub timings: AnnotatedVideoTimings,
 }
 
 impl Default for MediaStorage {
@@ -90,6 +104,25 @@ impl MediaStorage {
         output_fps: f64,
         output_frame_count: Option<u64>,
     ) -> Result<String, String> {
+        self.save_annotated_video_with_timings(
+            job_id,
+            frames,
+            duration_ms,
+            output_fps,
+            output_frame_count,
+        )
+        .await
+        .map(|result| result.url)
+    }
+
+    pub async fn save_annotated_video_with_timings(
+        &self,
+        job_id: Uuid,
+        frames: &[crate::rules::FrameDetection],
+        duration_ms: u64,
+        output_fps: f64,
+        output_frame_count: Option<u64>,
+    ) -> Result<AnnotatedVideoResult, String> {
         let output_directory = self.root.join("annotated");
         tokio::fs::create_dir_all(&output_directory)
             .await
@@ -109,25 +142,41 @@ impl MediaStorage {
             return Err("没有可用于生成回放的视频帧".into());
         }
         let annotated = grouped.into_iter().collect::<Vec<_>>();
+        let annotate_started = Instant::now();
         for (index, (source, (timestamp_ms, detections))) in annotated.iter().enumerate() {
             let destination = temporary.join(format!("sample-{:010}.jpg", index + 1));
             annotate_frame(source, &destination, detections, *timestamp_ms)
                 .map_err(|error| format!("标注视频帧失败：{error}"))?;
         }
+        let annotate_frames_ms = annotate_started.elapsed().as_millis();
         let output_count = output_frame_count.unwrap_or(annotated.len() as u64).max(1) as usize;
+        let duplicate_started = Instant::now();
         for index in 0..output_count {
             let sample_index = (index * annotated.len() / output_count).min(annotated.len() - 1);
             let source = temporary.join(format!("sample-{:010}.jpg", sample_index + 1));
             let destination = temporary.join(format!("frame-{:010}.jpg", index + 1));
             tokio::fs::copy(source, destination).await.map_err(|error| error.to_string())?;
         }
+        let duplicate_frames_ms = duplicate_started.elapsed().as_millis();
         for index in 0..annotated.len() {
             let _ = tokio::fs::remove_file(temporary.join(format!("sample-{:010}.jpg", index + 1))).await;
         }
         let output = output_directory.join(format!("{job_id}.mp4"));
+        let encode_started = Instant::now();
         let result = video::encode_frames(&temporary, &output, duration_ms, output_fps, output_frame_count).await;
+        let ffmpeg_encode_ms = encode_started.elapsed().as_millis();
+        let cleanup_started = Instant::now();
         let _ = tokio::fs::remove_dir_all(&temporary).await;
-        result.map(|_| format!("/media/annotated/{job_id}.mp4"))
+        let cleanup_ms = cleanup_started.elapsed().as_millis();
+        result.map(|_| AnnotatedVideoResult {
+            url: format!("/media/annotated/{job_id}.mp4"),
+            timings: AnnotatedVideoTimings {
+                annotate_frames_ms,
+                duplicate_frames_ms,
+                ffmpeg_encode_ms,
+                cleanup_ms,
+            },
+        })
     }
 
     pub async fn delete_annotated_video(&self, job_id: Uuid) -> std::io::Result<()> {

@@ -139,8 +139,24 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         source_metadata.frame_count,
     );
     let encode_started = Instant::now();
-    let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms, playback_fps, playback_frame_count).await;
+    let playback_result = state
+        .storage
+        .save_annotated_video_with_timings(
+            job_id,
+            &frames,
+            playback_duration_ms,
+            playback_fps,
+            playback_frame_count,
+        )
+        .await;
+    if let Ok(result) = &playback_result {
+        performance.add_stage_ms("annotate_frames", result.timings.annotate_frames_ms);
+        performance.add_stage_ms("duplicate_frames", result.timings.duplicate_frames_ms);
+        performance.add_stage_ms("ffmpeg_encode", result.timings.ffmpeg_encode_ms);
+        performance.add_stage_ms("playback_cleanup", result.timings.cleanup_ms);
+    }
     performance.add_stage_ms("annotated_video_encode", encode_started.elapsed().as_millis());
+    let playback_result = playback_result.map(|result| result.url);
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         match playback_result {
             Ok(url) => {
