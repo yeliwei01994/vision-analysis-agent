@@ -132,10 +132,12 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     }
     performance.add_stage_ms("rule_evaluation", rules_started.elapsed().as_millis());
     let playback_duration_ms = video::playback_duration_ms(source_metadata.duration_ms, job.duration_ms);
-    let playback_fps = source_metadata.frame_rate.unwrap_or(video::REPLAY_FPS as f64).max(1.0);
-    let playback_frame_count = source_metadata.frame_count.or_else(|| {
-        (playback_duration_ms > 0).then_some((playback_duration_ms as f64 / 1000.0 * playback_fps).round() as u64)
-    });
+    let playback_fps = video::playback_fps(source_metadata.frame_rate);
+    let playback_frame_count = video::playback_frame_count(
+        playback_duration_ms,
+        playback_fps,
+        source_metadata.frame_count,
+    );
     let encode_started = Instant::now();
     let playback_result = state.storage.save_annotated_video(job_id, &frames, playback_duration_ms, playback_fps, playback_frame_count).await;
     performance.add_stage_ms("annotated_video_encode", encode_started.elapsed().as_millis());

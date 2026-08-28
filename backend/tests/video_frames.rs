@@ -1,4 +1,7 @@
-use vision_event_api::video::{detection_interval_from, frame_timestamp_ms, parse_frame_rate, playback_duration_ms, DETECTION_INTERVAL_MS, REPLAY_FPS};
+use vision_event_api::video::{
+    annotated_video_codec_args, detection_interval_from, frame_timestamp_ms, parse_frame_rate,
+    playback_duration_ms, playback_frame_count, playback_fps, DETECTION_INTERVAL_MS, REPLAY_FPS,
+};
 
 #[test]
 fn parses_timestamp_from_ffmpeg_frame_name() {
@@ -32,4 +35,21 @@ fn parses_common_ffprobe_frame_rates() {
 fn playback_duration_uses_source_video_not_detection_count() {
     assert_eq!(playback_duration_ms(8_880, 24_200), 8_880);
     assert_eq!(playback_duration_ms(0, 9_000), 9_000);
+}
+
+#[test]
+fn annotated_playback_caps_fps_and_recomputes_output_frames() {
+    assert_eq!(playback_fps(Some(30.0)), 10.0);
+    assert_eq!(playback_fps(Some(8.0)), 8.0);
+    assert_eq!(playback_fps(None), 10.0);
+    assert_eq!(playback_frame_count(8_880, 10.0, Some(266)), Some(89));
+    assert_eq!(playback_frame_count(0, 10.0, Some(266)), Some(266));
+}
+
+#[test]
+fn annotated_video_uses_fast_compatible_h264_settings() {
+    assert_eq!(
+        annotated_video_codec_args(),
+        ["-preset", "veryfast", "-crf", "28"]
+    );
 }

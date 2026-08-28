@@ -4,6 +4,8 @@ use uuid::Uuid;
 
 pub const DETECTION_INTERVAL_MS: u64 = 200;
 pub const REPLAY_FPS: u32 = 10;
+pub const ANNOTATED_VIDEO_PRESET: &str = "veryfast";
+pub const ANNOTATED_VIDEO_CRF: &str = "28";
 
 pub fn detection_interval_from(value: Option<&str>) -> u64 {
     value
@@ -68,6 +70,29 @@ pub fn playback_duration_ms(source_duration_ms: u64, job_duration_ms: u64) -> u6
     }
 }
 
+pub fn playback_fps(source_fps: Option<f64>) -> f64 {
+    source_fps
+        .map(|fps| fps.min(REPLAY_FPS as f64))
+        .unwrap_or(REPLAY_FPS as f64)
+        .max(1.0)
+}
+
+pub fn playback_frame_count(
+    duration_ms: u64,
+    fps: f64,
+    source_frame_count: Option<u64>,
+) -> Option<u64> {
+    if duration_ms > 0 {
+        Some((duration_ms as f64 / 1000.0 * fps).ceil().max(1.0) as u64)
+    } else {
+        source_frame_count
+    }
+}
+
+pub fn annotated_video_codec_args() -> [&'static str; 4] {
+    ["-preset", ANNOTATED_VIDEO_PRESET, "-crf", ANNOTATED_VIDEO_CRF]
+}
+
 pub async fn extract_frames(
     path: &Path,
     interval_ms: u64,
@@ -122,7 +147,9 @@ pub async fn encode_frames(
     command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-framerate", &fps, "-start_number", "1", "-i"])
         .arg(&pattern)
-        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t"])
+        .args(["-c:v", "libx264"])
+        .args(annotated_video_codec_args())
+        .args(["-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t"])
         .arg(duration)
         ;
     if let Some(frame_count) = frame_count.as_deref() {
