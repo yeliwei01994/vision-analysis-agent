@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyJobProgressToJob,
+  buildJobProgressFromJob,
+  buildRetryProgress,
   estimateRemainingMs,
   jobActivityLabel,
   jobStageLabel,
@@ -119,8 +121,60 @@ describe('job progress', () => {
         'job-1',
       ),
     ).toEqual({
-      'job-2': { id: 'job-2', filename: 'older.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: null },
-      'job-1': { ...baseJob, status: 'processing', progress: 35 },
+      jobsById: {
+        'job-2': { id: 'job-2', filename: 'older.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: null },
+        'job-1': { ...baseJob, status: 'processing', progress: 35 },
+      },
+      progressById: {
+        'job-1': { ...baseEvent, progress: 35, stage: 'detecting', sequence: 3 },
+      },
+    });
+  });
+
+  it('promotes a newer polling snapshot over stale cached stream progress', () => {
+    const previous = {
+      'job-1': { ...baseJob, status: 'processing', progress: 20 },
+    };
+    const cachedProgress: Record<string, JobProgressEvent> = {
+      'job-1': { ...baseEvent, status: 'processing', stage: 'detecting', progress: 20, sequence: 2 },
+    };
+    const completedJob: VideoJob = { ...baseJob, status: 'completed', progress: 100 };
+
+    expect(
+      mergeJobsSnapshot(
+        previous,
+        [completedJob],
+        cachedProgress,
+        'job-1',
+      ),
+    ).toEqual({
+      jobsById: {
+        'job-1': completedJob,
+      },
+      progressById: {
+        'job-1': { job_id: 'job-1', status: 'completed', progress: 100, sequence: 3, estimated_remaining_ms: null },
+      },
+    });
+  });
+
+  it('replaces cached terminal progress when a retry starts and when the server accepts processing again', () => {
+    const terminal: JobProgressEvent = { ...baseEvent, status: 'failed', progress: 100, sequence: 5 };
+    const retrying = buildRetryProgress('job-1', terminal);
+    const accepted = buildJobProgressFromJob({ ...baseJob, status: 'processing', progress: 1 } satisfies VideoJob, retrying);
+
+    expect(retrying).toEqual({
+      job_id: 'job-1',
+      status: 'pending',
+      progress: 0,
+      sequence: 6,
+      estimated_remaining_ms: null,
+    });
+    expect(accepted).toEqual({
+      job_id: 'job-1',
+      status: 'processing',
+      progress: 1,
+      sequence: 7,
+      estimated_remaining_ms: null,
     });
   });
 

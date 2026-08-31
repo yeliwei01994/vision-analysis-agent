@@ -91,3 +91,76 @@ Result: PASS (`tsc -b && vite build`)
 
 - No Task 5/6 UI exists yet in this worktree, so the new App-level `retryJob` behavior is ready for later wiring but is not directly user-triggerable from the current interface.
 - `frontend/src/api/client.ts` was listed in the task brief, but no code change was needed there after validating that Task 3 already provided the required SSE adapter contract.
+
+## Fix Round 1 — 2026-08-31
+
+### Findings addressed
+
+1. Polling snapshots no longer lose to stale cached SSE progress.
+2. `retryJob(id)` no longer leaves a terminal cached progress entry in place while the retry is starting.
+3. Added regressions for polling snapshots overtaking stale SSE and retrying from terminal cached progress.
+
+### Root cause
+
+- `mergeJobsSnapshot(...)` rewrote every polled job through the existing `progressById` cache without ever updating that cache from the polled server state, so a dropped stream could leave an older non-terminal event permanently authoritative.
+- `retryJob(id)` reset only `jobsById[id]`; the old terminal `progressById[id]` remained in memory and was reapplied when `processVideo(id)` returned.
+- The first full verification also exposed a test-only timing issue: the reconnect regression needed explicit promise flushing before asserting under fake timers.
+
+### TDD
+
+Added failing regressions first:
+
+- `frontend/src/App.test.tsx`
+  - reconnect polling must advance a job from stale streamed `processing 20%` to polled `completed 100%`
+- `frontend/src/features/jobProgress.test.ts`
+  - `mergeJobsSnapshot(...)` must promote a newer polling snapshot over stale cached SSE
+  - retry progress must replace a terminal cached event before and after server acceptance
+
+Focused red command:
+
+```bash
+npm --prefix frontend test -- src/App.test.tsx src/features/jobProgress.test.ts
+```
+
+Observed expected failures:
+
+- stale cached progress remained authoritative over polled terminal server state
+- retry path had no helper to replace cached terminal progress
+
+### Fix
+
+- Changed `mergeJobsSnapshot(...)` to return both `jobsById` and reconciled `progressById`.
+- Added synthetic server-progress builders that advance local sequence numbers when polling or process responses reflect newer server truth.
+- Poll refresh now adopts reconciled `progressById` alongside reconciled jobs.
+- Retry now installs a fresh higher-sequence pending progress event before the process call, then replaces it from the process response.
+- Upload follow-up processing now also replaces progress from the accepted server job instead of reusing an older cache entry.
+
+### Verification
+
+Focused regressions:
+
+```bash
+npm --prefix frontend test -- src/App.test.tsx src/features/jobProgress.test.ts
+```
+
+Result: PASS (`2` files, `31` tests)
+
+Full frontend tests:
+
+```bash
+npm --prefix frontend test
+```
+
+Result: PASS (`5` files, `34` tests)
+
+Build:
+
+```bash
+npm --prefix frontend run build
+```
+
+Result: PASS (`tsc -b && vite build`)
+
+### Remaining concern
+
+- `retryJob(id)` is still App-internal because the Task 5/6 task-surface UI is not present in this worktree; the state semantics are covered, but the visible retry trigger remains for later tasks.

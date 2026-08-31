@@ -1,5 +1,12 @@
 import type { JobProgressEvent, JobStage, VideoJob } from '../types/events';
 
+type TrackableJobStatus = JobProgressEvent['status'];
+
+type MergedJobsSnapshot = {
+  jobsById: Record<string, VideoJob>;
+  progressById: Record<string, JobProgressEvent>;
+};
+
 type TimestampedProgress = JobProgressEvent & {
   progress: number;
   updated_at: string | number;
@@ -25,6 +32,7 @@ const statusLabels: Record<JobProgressEvent['status'], string> = {
 };
 
 const terminalStatuses = new Set<JobProgressEvent['status']>(['completed', 'failed', 'cancelled']);
+const trackableStatuses = new Set<TrackableJobStatus>(['pending', 'processing', 'completed', 'failed', 'cancelled']);
 
 function progressTimestamp(updated_at: string | number): number {
   return typeof updated_at === 'number' ? updated_at : Date.parse(updated_at);
@@ -36,6 +44,14 @@ function normalizedProgress(progress: number): number {
 
 function progressPercent(progress: number): number {
   return Math.max(0, Math.min(100, Math.round(normalizedProgress(progress) * 100)));
+}
+
+function jobPercent(progress: number): number {
+  return Math.max(0, Math.min(100, Math.round(progress)));
+}
+
+function isTrackableJobStatus(status: string): status is TrackableJobStatus {
+  return trackableStatuses.has(status as TrackableJobStatus);
 }
 
 function isTimestampedProgress(event: JobProgressEvent): event is JobProgressEvent & { progress: number; updated_at: string | number } {
@@ -111,31 +127,95 @@ export function applyJobProgressToJob(job: VideoJob, progress: JobProgressEvent)
   };
 }
 
+function nextSyntheticSequence(previous?: JobProgressEvent): number {
+  return (previous?.sequence ?? 0) + 1;
+}
+
+export function buildRetryProgress(jobId: string, previous?: JobProgressEvent): JobProgressEvent {
+  return {
+    job_id: jobId,
+    status: 'pending',
+    progress: 0,
+    sequence: nextSyntheticSequence(previous),
+    estimated_remaining_ms: null,
+  };
+}
+
+export function buildJobProgressFromJob(job: VideoJob, previous?: JobProgressEvent): JobProgressEvent | undefined {
+  if (!isTrackableJobStatus(job.status)) {
+    return undefined;
+  }
+
+  return {
+    job_id: job.id,
+    status: job.status,
+    progress: jobPercent(job.progress),
+    sequence: nextSyntheticSequence(previous),
+    stage: job.status === 'processing' ? previous?.stage : undefined,
+    message: job.status === 'processing' ? previous?.message : undefined,
+    estimated_remaining_ms: null,
+  };
+}
+
+function reconcileSnapshotProgress(previous: JobProgressEvent | undefined, snapshotJob: VideoJob): JobProgressEvent | undefined {
+  if (!previous) {
+    return undefined;
+  }
+
+  if (!isTrackableJobStatus(snapshotJob.status)) {
+    return previous;
+  }
+
+  const snapshotProgress = jobPercent(snapshotJob.progress);
+  const previousProgress = previous.progress === null ? null : progressPercent(previous.progress);
+  const statusChanged = previous.status !== snapshotJob.status;
+  const progressed = previousProgress === null ? snapshotProgress > 0 : snapshotProgress > previousProgress;
+  const terminalAdvanced = isTerminalJobStatus(snapshotJob.status) && (previous.status !== snapshotJob.status || previousProgress !== snapshotProgress);
+
+  if (!statusChanged && !progressed && !terminalAdvanced) {
+    return previous;
+  }
+
+  return buildJobProgressFromJob(snapshotJob, previous);
+}
+
 export function mergeJobsSnapshot(
   previousJobsById: Record<string, VideoJob>,
   snapshot: VideoJob[],
   progressById: Record<string, JobProgressEvent>,
   activeJobId: string | null,
-): Record<string, VideoJob> {
-  const nextJobsById = Object.fromEntries(
-    snapshot.map((job) => {
-      const progress = progressById[job.id];
-      return [job.id, progress ? applyJobProgressToJob(job, progress) : job];
-    }),
-  ) as Record<string, VideoJob>;
+): MergedJobsSnapshot {
+  const nextJobsById: Record<string, VideoJob> = {};
+  const nextProgressById: Record<string, JobProgressEvent> = {};
+
+  for (const job of snapshot) {
+    const progress = reconcileSnapshotProgress(progressById[job.id], job) ?? progressById[job.id];
+    if (progress) {
+      nextProgressById[job.id] = progress;
+    }
+    nextJobsById[job.id] = progress ? applyJobProgressToJob(job, progress) : job;
+  }
 
   if (!activeJobId || nextJobsById[activeJobId]) {
-    return nextJobsById;
+    return { jobsById: nextJobsById, progressById: nextProgressById };
   }
 
   const activeJob = previousJobsById[activeJobId];
   if (!activeJob || isTerminalJobStatus(activeJob.status)) {
-    return nextJobsById;
+    return { jobsById: nextJobsById, progressById: nextProgressById };
+  }
+
+  const activeProgress = progressById[activeJobId];
+  if (activeProgress) {
+    nextProgressById[activeJobId] = activeProgress;
   }
 
   return {
-    ...nextJobsById,
-    [activeJobId]: progressById[activeJobId] ? applyJobProgressToJob(activeJob, progressById[activeJobId]) : activeJob,
+    jobsById: {
+      ...nextJobsById,
+      [activeJobId]: activeProgress ? applyJobProgressToJob(activeJob, activeProgress) : activeJob,
+    },
+    progressById: nextProgressById,
   };
 }
 

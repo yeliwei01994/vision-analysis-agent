@@ -71,10 +71,30 @@ test('upload control sends the selected video to the upload API', async () => {
 test('starts polling after a reconnecting signal and stops once the stream reconnects', async () => {
   vi.useFakeTimers();
   apiMock.listEvents.mockResolvedValue([]);
-  apiMock.listJobs.mockResolvedValue([]);
+  apiMock.listJobs
+    .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 20, source_uri: null }])
+    .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 0, status: 'completed', progress: 100, source_uri: null }]);
 
   render(<App />);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
   expect(apiMock.listJobs).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByRole('button', { name: '视频任务' }));
+  expect(screen.getByText('20%')).toBeInTheDocument();
+
+  act(() => {
+    progressMock.onEvent?.({
+      job_id: 'job-1',
+      status: 'processing',
+      stage: 'detecting',
+      progress: 20,
+      sequence: 2,
+      updated_at: '2026-08-31T08:00:00.000Z',
+    });
+  });
 
   act(() => {
     progressMock.onStateChange?.('reconnecting');
@@ -85,6 +105,8 @@ test('starts polling after a reconnecting signal and stops once the stream recon
 
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
   expect(apiMock.listJobs).toHaveBeenCalledTimes(2);
+  expect(screen.getByText('100%')).toBeInTheDocument();
+  expect(screen.getByText('completed')).toBeInTheDocument();
 
   act(() => {
     progressMock.onStateChange?.('connected');

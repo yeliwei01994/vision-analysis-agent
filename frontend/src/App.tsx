@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api/client';
-import { applyJobProgressToJob, jobActivityLabel, mergeJobProgress, mergeJobsSnapshot, orderJobsByPriority } from './features/jobProgress';
+import { applyJobProgressToJob, buildJobProgressFromJob, buildRetryProgress, jobActivityLabel, mergeJobProgress, mergeJobsSnapshot, orderJobsByPriority } from './features/jobProgress';
 import { JobsPage, ModelsPage, RulesPage } from './features/WorkspacePages';
 import { detectionSummary, displayEventType, fallbackAnalysis, groupEvents, preciseTime } from './features/eventPresentation';
 import type { Detection, EventItem, EventRule, JobConnectionState, JobProgressEvent, VideoJob } from './types/events';
@@ -92,8 +92,8 @@ export default function App() {
         setSelected(current => pickSelectedEvent(nextEvents, current));
         setRules(nextRules);
         setJobPool(current => {
-          const jobsById = mergeJobsSnapshot(current.jobsById, nextJobs, current.progressById, current.activeJobId);
-          return { ...current, jobsById, activeJobId: pickActiveJobId(jobsById, current.activeJobId) };
+          const merged = mergeJobsSnapshot(current.jobsById, nextJobs, current.progressById, current.activeJobId);
+          return { ...current, ...merged, activeJobId: pickActiveJobId(merged.jobsById, current.activeJobId) };
         });
       })
       .catch(cause => setError(cause instanceof Error ? cause.message : '初始化数据失败'));
@@ -117,8 +117,8 @@ export default function App() {
       const nextJobs = await api.listJobs();
       setJobPool(current => {
         shouldRefreshEvents = nextJobs.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status) && !['completed', 'failed', 'cancelled'].includes(current.jobsById[item.id]?.status ?? ''));
-        const jobsById = mergeJobsSnapshot(current.jobsById, nextJobs, current.progressById, current.activeJobId);
-        return { ...current, jobsById, activeJobId: pickActiveJobId(jobsById, current.activeJobId) };
+        const merged = mergeJobsSnapshot(current.jobsById, nextJobs, current.progressById, current.activeJobId);
+        return { ...current, ...merged, activeJobId: pickActiveJobId(merged.jobsById, current.activeJobId) };
       });
       if (shouldRefreshEvents) {
         await refreshEvents();
@@ -203,14 +203,27 @@ export default function App() {
   };
 
   async function choose(event: EventItem) { setSelected(event); setFrameIndex(0); setPlaybackMode('original'); setFeedback(''); setFailedEvidenceUrls([]); setEvidenceSize({ width: 1, height: 1 }); setReviewHistory(await api.listReviews(event.id).catch(() => [])); }
-  function upsertJob(nextJob: VideoJob, preferredJobId = nextJob.id) {
+  function upsertJob(nextJob: VideoJob, preferredJobId = nextJob.id, mode: 'preserve-progress' | 'replace-progress' = 'preserve-progress') {
     setJobPool(current => {
-      const progress = current.progressById[nextJob.id];
+      const previousProgress = current.progressById[nextJob.id];
+      const progress = mode === 'replace-progress' ? buildJobProgressFromJob(nextJob, previousProgress) : previousProgress;
       const mergedJob = progress ? applyJobProgressToJob(nextJob, progress) : nextJob;
       const jobsById = { ...current.jobsById, [mergedJob.id]: mergedJob };
+      const progressById = mode === 'replace-progress'
+        ? (() => {
+            const nextProgressById = { ...current.progressById };
+            if (progress) {
+              nextProgressById[nextJob.id] = progress;
+            } else {
+              delete nextProgressById[nextJob.id];
+            }
+            return nextProgressById;
+          })()
+        : current.progressById;
       return {
         ...current,
         jobsById,
+        progressById,
         activeJobId: pickActiveJobId(jobsById, preferredJobId),
       };
     });
@@ -223,7 +236,7 @@ export default function App() {
       upsertJob(created);
       if (created.status === 'pending') {
         void api.processVideo(created.id)
-          .then(processed => upsertJob(processed, created.id))
+          .then(processed => upsertJob(processed, created.id, 'replace-progress'))
           .catch(cause => setError(cause instanceof Error ? cause.message : '视频任务处理失败'));
       }
     } catch (cause) { setError(cause instanceof Error ? cause.message : '视频任务处理失败'); }
@@ -236,20 +249,22 @@ export default function App() {
       if (!currentJob) {
         return current;
       }
+      const retryProgress = buildRetryProgress(id, current.progressById[id]);
 
       const jobsById = {
         ...current.jobsById,
-        [id]: {
-          ...currentJob,
-          status: 'pending',
-          progress: 0,
-        },
+        [id]: applyJobProgressToJob({ ...currentJob, status: 'pending', progress: 0 }, retryProgress),
       };
-      return { ...current, jobsById, activeJobId: pickActiveJobId(jobsById, id) };
+      return {
+        ...current,
+        jobsById,
+        progressById: { ...current.progressById, [id]: retryProgress },
+        activeJobId: pickActiveJobId(jobsById, id),
+      };
     });
 
     try {
-      upsertJob(await api.processVideo(id), id);
+      upsertJob(await api.processVideo(id), id, 'replace-progress');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '视频任务处理失败');
     }
