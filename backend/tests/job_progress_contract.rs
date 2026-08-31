@@ -52,3 +52,27 @@ fn terminal_jobs_do_not_regress_to_processing_updates() {
     assert_eq!(saved.status, JobStatus::Completed);
     assert_eq!(saved.progress, 100);
 }
+
+#[tokio::test]
+async fn publish_job_progress_preserves_terminal_state_and_emits_stored_snapshot() {
+    let state = AppState::default();
+    let mut subscriber = state.subscribe_job_progress();
+
+    for status in [JobStatus::Completed, JobStatus::Failed, JobStatus::Cancelled] {
+        let job = state.create_job(format!("{status:?}.mp4").to_lowercase(), 12_000);
+        state.update_job(job.id, status.clone(), 100);
+
+        state.publish_job_progress(job.id, JobStage::Finalizing, 25, "stale update".into());
+
+        let event = subscriber.recv().await.unwrap();
+        let saved = state.job(job.id).unwrap();
+
+        assert_eq!(saved.status, status);
+        assert_eq!(saved.progress, 100);
+        assert_eq!(event.job_id, job.id);
+        assert_eq!(event.status, saved.status);
+        assert_eq!(event.progress, saved.progress);
+        assert_eq!(event.stage, JobStage::Finalizing);
+        assert_eq!(event.message, "stale update");
+    }
+}

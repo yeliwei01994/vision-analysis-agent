@@ -43,6 +43,17 @@ impl Default for AppState {
 }
 
 impl AppState {
+    fn apply_job_update(&self, id: Uuid, status: JobStatus, progress: u8) -> Option<VideoJob> {
+        let mut jobs = self.jobs.write().expect("jobs lock poisoned");
+        let job = jobs.get_mut(&id)?;
+        if job.status.is_terminal() && !status.is_terminal() {
+            return Some(job.clone());
+        }
+        job.status = status;
+        job.progress = progress;
+        Some(job.clone())
+    }
+
     pub fn with_integrations(
         mut self,
         database: Option<Database>,
@@ -146,13 +157,7 @@ impl AppState {
         self.update_job(id, JobStatus::Completed, 100);
     }
     pub fn update_job(&self, id: Uuid, status: JobStatus, progress: u8) {
-        if let Some(job) = self.jobs.write().expect("jobs lock poisoned").get_mut(&id) {
-            if job.status.is_terminal() && !status.is_terminal() {
-                return;
-            }
-            job.status = status;
-            job.progress = progress;
-        }
+        let _ = self.apply_job_update(id, status, progress);
     }
     pub fn publish_job_progress(
         &self,
@@ -161,17 +166,11 @@ impl AppState {
         progress: u8,
         message: String,
     ) {
-        let status = self
-            .job(job_id)
-            .map(|job| {
-                if job.status.is_terminal() {
-                    job.status
-                } else {
-                    JobStatus::Processing
-                }
-            })
-            .unwrap_or(JobStatus::Processing);
-        self.update_job(job_id, status.clone(), progress);
+        let current_job = match self.job(job_id) {
+            Some(job) if job.status.is_terminal() => Some(job),
+            Some(_) => self.apply_job_update(job_id, JobStatus::Processing, progress),
+            None => None,
+        };
 
         let sequence = {
             let mut sequences = self
@@ -183,7 +182,17 @@ impl AppState {
             next
         };
 
-        let event = JobProgressEvent::new(job_id, status, stage, progress, message, sequence);
+        let (event_status, event_progress) = current_job
+            .map(|job| (job.status, job.progress))
+            .unwrap_or((JobStatus::Processing, progress));
+        let event = JobProgressEvent::new(
+            job_id,
+            event_status,
+            stage,
+            event_progress,
+            message,
+            sequence,
+        );
         let _ = self.job_progress_events.send(event);
     }
     pub fn subscribe_job_progress(&self) -> broadcast::Receiver<JobProgressEvent> {
