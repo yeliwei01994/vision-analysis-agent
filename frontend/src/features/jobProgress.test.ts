@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { estimateRemainingMs, jobStageLabel, jobStatusLabel, mergeJobProgress } from './jobProgress';
-import type { JobProgressEvent } from '../types/events';
+import {
+  applyJobProgressToJob,
+  estimateRemainingMs,
+  jobActivityLabel,
+  jobStageLabel,
+  jobStatusLabel,
+  mergeJobProgress,
+  mergeJobsSnapshot,
+} from './jobProgress';
+import type { JobProgressEvent, VideoJob } from '../types/events';
 
 const baseEvent: JobProgressEvent = {
   job_id: 'job-1',
@@ -8,6 +16,15 @@ const baseEvent: JobProgressEvent = {
   stage: 'reading',
   progress: 0.25,
   sequence: 2,
+};
+
+const baseJob: VideoJob = {
+  id: 'job-1',
+  filename: 'clip.mp4',
+  duration_ms: 12_000,
+  status: 'pending',
+  progress: 0,
+  source_uri: null,
 };
 
 describe('job progress', () => {
@@ -71,6 +88,46 @@ describe('job progress', () => {
     const current: JobProgressEvent = { ...baseEvent, progress: 50, sequence: 2, updated_at: 1_725_091_210_000 };
 
     expect(estimateRemainingMs(history, current)).toBe(20000);
+  });
+
+  it('applies realtime progress onto a job record without losing its metadata', () => {
+    const next = applyJobProgressToJob(baseJob, {
+      ...baseEvent,
+      stage: 'detecting',
+      progress: 35,
+      updated_at: '2026-08-31T08:00:00.000Z',
+    });
+
+    expect(next).toEqual({
+      ...baseJob,
+      status: 'processing',
+      progress: 35,
+    });
+  });
+
+  it('preserves the active in-flight job when a stale snapshot does not include it yet', () => {
+    const previous = {
+      'job-1': { ...baseJob, status: 'processing', progress: 10 },
+      'job-2': { id: 'job-2', filename: 'older.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: null },
+    };
+
+    expect(
+      mergeJobsSnapshot(
+        previous,
+        [{ id: 'job-2', filename: 'older.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: null }],
+        { 'job-1': { ...baseEvent, progress: 35, stage: 'detecting', sequence: 3 } },
+        'job-1',
+      ),
+    ).toEqual({
+      'job-2': { id: 'job-2', filename: 'older.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: null },
+      'job-1': { ...baseJob, status: 'processing', progress: 35 },
+    });
+  });
+
+  it('prefers stage copy for active jobs and falls back to status labels', () => {
+    expect(jobActivityLabel({ ...baseEvent, stage: 'detecting' })).toBe('正在进行目标检测');
+    expect(jobActivityLabel({ ...baseEvent, stage: undefined, status: 'failed' })).toBe('处理失败');
+    expect(jobActivityLabel()).toBe('等待导入');
   });
 
   it('maps every stage and status to user-facing labels', () => {

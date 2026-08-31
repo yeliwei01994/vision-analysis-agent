@@ -2,10 +2,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { vi } from 'vitest';
 import App from './App';
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
-const { event, apiMock } = vi.hoisted(() => {
+const { event, apiMock, progressMock } = vi.hoisted(() => {
   const event = { id: 'event-1', job_id: 'job-1', event_type: 'person_enter_zone', start_time_ms: 1000, end_time_ms: 12000, severity: 'high', status: 'unreviewed', confidence: 0.91, objects: [{ class_name: 'person', confidence: 0.94, bbox: [10, 20, 80, 160], track_id: 1 }], evidence: { frame_urls: [] }, analysis: { summary: '人员进入受限区域并持续停留', severity: 'high', suggestion: '请人工确认是否为授权人员', report_source: 'mock' }, detector_version: 'yolov8n' };
+  const progressMock = {
+    onEvent: undefined as undefined | ((event: Record<string, unknown>) => void),
+    onStateChange: undefined as undefined | ((state: 'connected' | 'reconnecting') => void),
+    unsubscribe: vi.fn(),
+  };
   const apiMock = {
     listEvents: vi.fn().mockResolvedValue([event]),
     listRules: vi.fn().mockResolvedValue([]),
@@ -13,11 +18,23 @@ const { event, apiMock } = vi.hoisted(() => {
     createVideo: vi.fn(), uploadVideo: vi.fn(), processVideo: vi.fn(), getJob: vi.fn(), updateJob: vi.fn(), deleteJob: vi.fn(), deleteEvent: vi.fn(),
     confirmEvent: vi.fn().mockResolvedValue({ ...event, status: 'confirmed' }),
     ignoreEvent: vi.fn().mockResolvedValue({ ...event, status: 'ignored' }),
+    listReviews: vi.fn().mockResolvedValue([]),
+    reviewEvent: vi.fn().mockResolvedValue(event),
+    subscribeJobProgress: vi.fn((onEvent, onStateChange) => {
+      progressMock.onEvent = onEvent;
+      progressMock.onStateChange = onStateChange;
+      return progressMock.unsubscribe;
+    }),
   };
-  return { event, apiMock };
+  return { event, apiMock, progressMock };
 });
 
 vi.mock('./api/client', () => ({ api: apiMock }));
+
+afterEach(() => {
+  progressMock.onEvent = undefined;
+  progressMock.onStateChange = undefined;
+});
 
 test('shows empty event state when no events exist', async () => {
   apiMock.listEvents.mockResolvedValueOnce([]);
@@ -51,38 +68,30 @@ test('upload control sends the selected video to the upload API', async () => {
   await waitFor(() => expect(apiMock.uploadVideo).toHaveBeenCalledWith(file));
 });
 
-test('backs off job polling while processing and stops after completion', async () => {
+test('starts polling after a reconnecting signal and stops once the stream reconnects', async () => {
   vi.useFakeTimers();
   apiMock.listEvents.mockResolvedValue([]);
   apiMock.listJobs.mockResolvedValue([]);
-  apiMock.uploadVideo.mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'pending', progress: 0 });
-  apiMock.processVideo.mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 1 });
-  apiMock.getJob
-    .mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 10 })
-    .mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 20 })
-    .mockResolvedValueOnce({ id: 'job-poll', filename: 'clip.mp4', duration_ms: 0, status: 'completed', progress: 100 });
 
   render(<App />);
-  await act(async () => {
-    fireEvent.change(screen.getByLabelText('导入视频任务'), {
-      target: { files: [new File(['video'], 'clip.mp4', { type: 'video/mp4' })] },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
+  expect(apiMock.listJobs).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    progressMock.onStateChange?.('reconnecting');
   });
 
-  expect(apiMock.getJob).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('实时重连中')).toBeInTheDocument();
+  expect(screen.getByText('实时进度连接已断开，正在轮询任务状态…')).toBeInTheDocument();
 
-  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  expect(apiMock.getJob).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(apiMock.listJobs).toHaveBeenCalledTimes(2);
 
-  await act(async () => { await vi.advanceTimersByTimeAsync(1999); });
-  expect(apiMock.getJob).toHaveBeenCalledTimes(2);
+  act(() => {
+    progressMock.onStateChange?.('connected');
+  });
 
-  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-  expect(apiMock.getJob).toHaveBeenCalledTimes(3);
-  expect(apiMock.getJob).toHaveBeenCalledWith('job-poll');
-  vi.useRealTimers();
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(apiMock.listJobs).toHaveBeenCalledTimes(2);
 });
 
 test('releases the upload control while background processing continues', async () => {
@@ -99,6 +108,49 @@ test('releases the upload control while background processing continues', async 
 
   await waitFor(() => expect(apiMock.processVideo).toHaveBeenCalledWith('job-background'));
   expect(screen.getByLabelText('导入视频任务')).not.toBeDisabled();
+});
+
+test('shows an uploaded job in the shared task list immediately after acceptance', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.listJobs.mockResolvedValueOnce([]);
+  apiMock.uploadVideo.mockResolvedValueOnce({ id: 'job-uploaded', filename: 'clip.mp4', duration_ms: 2_000, status: 'pending', progress: 0, source_uri: null });
+  apiMock.processVideo.mockResolvedValueOnce({ id: 'job-uploaded', filename: 'clip.mp4', duration_ms: 2_000, status: 'processing', progress: 1, source_uri: null });
+  apiMock.getJob.mockReturnValueOnce(new Promise(() => {}));
+
+  render(<App />);
+  fireEvent.change(screen.getByLabelText('导入视频任务'), {
+    target: { files: [new File(['video'], 'clip.mp4', { type: 'video/mp4' })] },
+  });
+
+  await waitFor(() => expect(apiMock.uploadVideo).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(apiMock.processVideo).toHaveBeenCalledWith('job-uploaded'));
+
+  fireEvent.click(screen.getByRole('button', { name: '视频任务' }));
+  expect(await screen.findByText('clip.mp4')).toBeInTheDocument();
+});
+
+test('merges realtime job progress updates into the app-level task list', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.listJobs.mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 2_000, status: 'processing', progress: 10, source_uri: null }]);
+
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: '视频任务' }));
+
+  expect(await screen.findByText('clip.mp4')).toBeInTheDocument();
+  expect(apiMock.subscribeJobProgress).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    progressMock.onEvent?.({
+      job_id: 'job-1',
+      status: 'processing',
+      stage: 'detecting',
+      progress: 55,
+      sequence: 2,
+      updated_at: '2026-08-31T08:00:00.000Z',
+    });
+  });
+
+  expect(await screen.findByText('55%')).toBeInTheDocument();
 });
 
 test('shows real evidence frames and lets the reviewer select a timeline point', async () => {

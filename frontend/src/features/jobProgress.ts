@@ -1,4 +1,4 @@
-import type { JobProgressEvent, JobStage } from '../types/events';
+import type { JobProgressEvent, JobStage, VideoJob } from '../types/events';
 
 type TimestampedProgress = JobProgressEvent & {
   progress: number;
@@ -34,6 +34,10 @@ function normalizedProgress(progress: number): number {
   return progress > 1 ? progress / 100 : progress;
 }
 
+function progressPercent(progress: number): number {
+  return Math.max(0, Math.min(100, Math.round(normalizedProgress(progress) * 100)));
+}
+
 function isTimestampedProgress(event: JobProgressEvent): event is JobProgressEvent & { progress: number; updated_at: string | number } {
   if (event.progress === null || event.updated_at === undefined) {
     return false;
@@ -53,6 +57,10 @@ function toTimestampedProgress(event: JobProgressEvent & { progress: number; upd
 
 function isTerminal(status: JobProgressEvent['status']) {
   return terminalStatuses.has(status);
+}
+
+export function isTerminalJobStatus(status: string): status is JobProgressEvent['status'] {
+  return terminalStatuses.has(status as JobProgressEvent['status']);
 }
 
 export function mergeJobProgress(previous: JobProgressEvent, next: JobProgressEvent): JobProgressEvent {
@@ -77,6 +85,78 @@ export function jobStageLabel(stage: JobStage): string {
 
 export function jobStatusLabel(status: JobProgressEvent['status']): string {
   return statusLabels[status];
+}
+
+export function jobActivityLabel(progress?: JobProgressEvent | null, fallbackStatus?: string): string {
+  if (progress?.stage) {
+    return jobStageLabel(progress.stage);
+  }
+
+  if (progress) {
+    return jobStatusLabel(progress.status);
+  }
+
+  if (fallbackStatus && (isTerminalJobStatus(fallbackStatus) || fallbackStatus === 'pending' || fallbackStatus === 'processing')) {
+    return jobStatusLabel(fallbackStatus as JobProgressEvent['status']);
+  }
+
+  return '等待导入';
+}
+
+export function applyJobProgressToJob(job: VideoJob, progress: JobProgressEvent): VideoJob {
+  return {
+    ...job,
+    status: progress.status,
+    progress: progress.progress === null ? job.progress : progressPercent(progress.progress),
+  };
+}
+
+export function mergeJobsSnapshot(
+  previousJobsById: Record<string, VideoJob>,
+  snapshot: VideoJob[],
+  progressById: Record<string, JobProgressEvent>,
+  activeJobId: string | null,
+): Record<string, VideoJob> {
+  const nextJobsById = Object.fromEntries(
+    snapshot.map((job) => {
+      const progress = progressById[job.id];
+      return [job.id, progress ? applyJobProgressToJob(job, progress) : job];
+    }),
+  ) as Record<string, VideoJob>;
+
+  if (!activeJobId || nextJobsById[activeJobId]) {
+    return nextJobsById;
+  }
+
+  const activeJob = previousJobsById[activeJobId];
+  if (!activeJob || isTerminalJobStatus(activeJob.status)) {
+    return nextJobsById;
+  }
+
+  return {
+    ...nextJobsById,
+    [activeJobId]: progressById[activeJobId] ? applyJobProgressToJob(activeJob, progressById[activeJobId]) : activeJob,
+  };
+}
+
+export function orderJobsByPriority(jobsById: Record<string, VideoJob>, activeJobId: string | null): VideoJob[] {
+  return Object.values(jobsById).sort((left, right) => {
+    if (left.id === activeJobId) {
+      return -1;
+    }
+
+    if (right.id === activeJobId) {
+      return 1;
+    }
+
+    const leftActive = !isTerminalJobStatus(left.status);
+    const rightActive = !isTerminalJobStatus(right.status);
+    if (leftActive !== rightActive) {
+      return leftActive ? -1 : 1;
+    }
+
+    return 0;
+  });
 }
 
 export function estimateRemainingMs(history: JobProgressEvent[], current: JobProgressEvent): number | null {
