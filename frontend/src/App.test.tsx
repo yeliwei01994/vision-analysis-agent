@@ -1,8 +1,10 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import App from './App';
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
+
+vi.spyOn(window, 'open').mockImplementation(() => null);
 
 const { event, apiMock, progressMock } = vi.hoisted(() => {
   const event = { id: 'event-1', job_id: 'job-1', event_type: 'person_enter_zone', start_time_ms: 1000, end_time_ms: 12000, severity: 'high', status: 'unreviewed', confidence: 0.91, objects: [{ class_name: 'person', confidence: 0.94, bbox: [10, 20, 80, 160], track_id: 1 }], evidence: { frame_urls: [] }, analysis: { summary: '人员进入受限区域并持续停留', severity: 'high', suggestion: '请人工确认是否为授权人员', report_source: 'mock' }, detector_version: 'yolov8n' };
@@ -34,6 +36,123 @@ vi.mock('./api/client', () => ({ api: apiMock }));
 afterEach(() => {
   progressMock.onEvent = undefined;
   progressMock.onStateChange = undefined;
+});
+
+test('shows a persistent task summary bar that opens and closes a keyboard-friendly drawer', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.listJobs.mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 125_000, status: 'processing', progress: 42, source_uri: '/media/clip.mp4' }]);
+
+  render(<App />);
+  await waitFor(() => expect(apiMock.listJobs).toHaveBeenCalledTimes(1));
+
+  act(() => {
+    progressMock.onEvent?.({
+      job_id: 'job-1',
+      status: 'processing',
+      stage: 'detecting',
+      progress: 42,
+      message: '已完成 120 / 240 帧',
+      updated_at: '2026-08-31T08:00:00.000Z',
+      estimated_remaining_ms: 61_000,
+      sequence: 2,
+    });
+  });
+
+  const summary = screen.getByRole('button', { name: /clip\.mp4/ });
+  expect(summary).toHaveTextContent('正在进行目标检测');
+  fireEvent.click(summary);
+
+  const drawer = screen.getByRole('dialog', { name: '任务详情' });
+  expect(drawer).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '关闭任务详情' })).toBeInTheDocument();
+  expect(within(drawer).getByText('已完成 120 / 240 帧')).toBeInTheDocument();
+  expect(within(drawer).getByText('预计剩余')).toBeInTheDocument();
+
+  fireEvent.keyDown(document, { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '任务详情' })).not.toBeInTheDocument());
+});
+
+test('shows completion result actions from shared task state and keeps event review and playback flows intact', async () => {
+  const completedEvent = {
+    ...event,
+    evidence: {
+      frame_urls: ['/media/evidence/event-1/frame-1.jpg'],
+      frames: [{ timestamp_ms: 0, image_url: '/media/evidence/event-1/frame-1.jpg', detections: event.objects }],
+    },
+  };
+  apiMock.listEvents
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([completedEvent]);
+  apiMock.listJobs
+    .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 6_000, status: 'processing', progress: 88, source_uri: '/media/clip.mp4', annotated_video_status: 'pending', annotated_video_url: null }])
+    .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: '/media/clip.mp4', annotated_video_status: 'ready', annotated_video_url: '/media/annotated/job-1.mp4' }]);
+
+  render(<App />);
+  await waitFor(() => expect(apiMock.listJobs).toHaveBeenCalledTimes(1));
+
+  act(() => {
+    progressMock.onEvent?.({
+      job_id: 'job-1',
+      status: 'completed',
+      stage: 'finalizing',
+      progress: 100,
+      message: '已生成事件与检测回放',
+      updated_at: '2026-08-31T08:03:00.000Z',
+      estimated_remaining_ms: 0,
+      sequence: 3,
+    });
+  });
+
+  await waitFor(() => expect(screen.getByRole('button', { name: '查看任务详情 clip.mp4' })).toHaveTextContent('关联事件 1 条'));
+
+  fireEvent.click(screen.getByRole('button', { name: /clip\.mp4/ }));
+
+  const drawer = screen.getByRole('dialog', { name: '任务详情' });
+  expect(drawer).toBeInTheDocument();
+  expect(within(drawer).getByText('已生成事件与检测回放')).toBeInTheDocument();
+  expect(within(drawer).getByText('关联事件')).toBeInTheDocument();
+  expect(within(drawer).getByText('1 条')).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '查看事件' })).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '播放检测回放' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: '查看事件' }));
+  expect(await screen.findByRole('heading', { name: '事件详情' })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /clip\.mp4/ }));
+  fireEvent.click(screen.getByRole('button', { name: '播放检测回放' }));
+  expect(await screen.findByLabelText('YOLO 检测回放')).toBeInTheDocument();
+});
+
+test('shows failure details and lets the operator retry from the task drawer', async () => {
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.listJobs.mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 4_000, status: 'processing', progress: 76, source_uri: '/media/clip.mp4' }]);
+  apiMock.processVideo.mockResolvedValueOnce({ id: 'job-1', filename: 'clip.mp4', duration_ms: 4_000, status: 'pending', progress: 0, source_uri: '/media/clip.mp4' });
+
+  render(<App />);
+  await waitFor(() => expect(apiMock.listJobs).toHaveBeenCalledTimes(1));
+
+  act(() => {
+    progressMock.onEvent?.({
+      job_id: 'job-1',
+      status: 'failed',
+      stage: 'analyzing_events',
+      progress: 76,
+      message: '模型服务暂时不可用',
+      updated_at: '2026-08-31T08:05:00.000Z',
+      estimated_remaining_ms: null,
+      sequence: 4,
+    });
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: /clip\.mp4/ }));
+
+  const drawer = screen.getByRole('dialog', { name: '任务详情' });
+  expect(drawer).toBeInTheDocument();
+  expect(within(drawer).getAllByText('处理失败').length).toBeGreaterThan(0);
+  expect(within(drawer).getByText('失败原因：模型服务暂时不可用')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: '重新处理' }));
+  await waitFor(() => expect(apiMock.processVideo).toHaveBeenCalledWith('job-1'));
 });
 
 test('shows empty event state when no events exist', async () => {
@@ -148,7 +267,7 @@ test('shows an uploaded job in the shared task list immediately after acceptance
   await waitFor(() => expect(apiMock.processVideo).toHaveBeenCalledWith('job-uploaded'));
 
   fireEvent.click(screen.getByRole('button', { name: '视频任务' }));
-  expect(await screen.findByText('clip.mp4')).toBeInTheDocument();
+  expect((await screen.findAllByRole('article', { name: 'clip.mp4' })).length).toBeGreaterThan(0);
 });
 
 test('merges realtime job progress updates into the app-level task list', async () => {

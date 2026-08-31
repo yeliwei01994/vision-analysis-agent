@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api/client';
 import { applyJobProgressToJob, buildJobProgressFromJob, buildRetryProgress, jobActivityLabel, mergeJobProgress, mergeJobsSnapshot, orderJobsByPriority } from './features/jobProgress';
+import { JobTaskDrawer } from './features/JobTaskDrawer';
 import { JobsPage, ModelsPage, RulesPage } from './features/WorkspacePages';
 import { detectionSummary, displayEventType, fallbackAnalysis, groupEvents, preciseTime } from './features/eventPresentation';
 import type { Detection, EventItem, EventRule, JobConnectionState, JobProgressEvent, VideoJob } from './types/events';
@@ -46,11 +47,44 @@ function pickSelectedEvent(nextEvents: EventItem[], current: EventItem | null) {
   return nextEvents.find((item) => item.id === current.id) ?? nextEvents[0] ?? null;
 }
 
+type JobSummaryBarProps = {
+  job: VideoJob;
+  progressEvent?: JobProgressEvent | null;
+  eventCount?: number | null;
+  onOpen: (jobId: string) => void;
+};
+
+function JobSummaryBar({ job, progressEvent, eventCount, onOpen }: JobSummaryBarProps) {
+  const progress = typeof progressEvent?.progress === 'number'
+    ? Math.max(0, Math.min(100, Math.round(progressEvent.progress > 1 ? progressEvent.progress : progressEvent.progress * 100)))
+    : Math.max(0, Math.min(100, Math.round(job.progress)));
+  const activity = jobActivityLabel(progressEvent, job.status);
+  const status = progressEvent?.status ?? job.status;
+  const summaryClass = ['completed', 'failed', 'cancelled'].includes(status) ? status : 'active';
+
+  return (
+    <button className={`job-summary-bar ${summaryClass}`} type="button" onClick={() => onOpen(job.id)} aria-label={`查看任务详情 ${job.filename}`}>
+      <div className="job-summary-copy">
+        <p className="eyebrow">LIVE TASK SUMMARY</p>
+        <strong>{job.filename}</strong>
+        <span>{activity}</span>
+        {progressEvent?.message && <small>{progressEvent.message}</small>}
+      </div>
+      <div className="job-summary-meta">
+        <strong>{`${progress}%`}</strong>
+        <span>{['completed', 'failed', 'cancelled'].includes(status) ? jobActivityLabel(progressEvent, job.status) : '处理中'}</span>
+        {typeof eventCount === 'number' && eventCount > 0 && <small>{`关联事件 ${eventCount} 条`}</small>}
+      </div>
+    </button>
+  );
+}
+
 export default function App() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [selected, setSelected] = useState<EventItem | null>(null);
   const [rules, setRules] = useState<EventRule[]>([]);
   const [jobPool, setJobPool] = useState<JobPool>(initialJobPool);
+  const [drawerJobId, setDrawerJobId] = useState<string | null>(null);
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<EventItem['status'] | ''>('');
   const [severityFilter, setSeverityFilter] = useState('');
@@ -82,6 +116,14 @@ export default function App() {
     return jobs[0] ?? null;
   }, [jobPool.activeJobId, jobPool.jobsById, jobs]);
   const activeJobProgress = activeJob ? jobPool.progressById[activeJob.id] ?? null : null;
+  const eventsByJobId = useMemo(() => events.reduce<Record<string, EventItem[]>>((groupsByJobId, item) => {
+    groupsByJobId[item.job_id] = groupsByJobId[item.job_id] ? [...groupsByJobId[item.job_id], item] : [item];
+    return groupsByJobId;
+  }, {}), [events]);
+  const activeJobEventCount = activeJob ? (eventsByJobId[activeJob.id]?.length ?? 0) : null;
+  const drawerJob = drawerJobId ? jobPool.jobsById[drawerJobId] ?? null : null;
+  const drawerProgress = drawerJob ? jobPool.progressById[drawerJob.id] ?? null : null;
+  const drawerEventCount = drawerJob ? (eventsByJobId[drawerJob.id]?.length ?? 0) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +141,12 @@ export default function App() {
       .catch(cause => setError(cause instanceof Error ? cause.message : '初始化数据失败'));
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (drawerJobId && !jobPool.jobsById[drawerJobId]) {
+      setDrawerJobId(null);
+    }
+  }, [drawerJobId, jobPool.jobsById]);
 
   async function refreshEvents() {
     const next = await api.listEvents(50);
@@ -151,6 +199,7 @@ export default function App() {
     };
     const unsubscribe = api.subscribeJobProgress((incoming) => {
       let reachedTerminal = false;
+      const incomingTerminal = ['completed', 'failed', 'cancelled'].includes(incoming.status);
       setJobPool(current => {
         const currentProgress = current.progressById[incoming.job_id];
         const mergedProgress = currentProgress ? mergeJobProgress(currentProgress, incoming) : incoming;
@@ -165,7 +214,7 @@ export default function App() {
           activeJobId: pickActiveJobId(nextJobsById, incoming.job_id),
         };
       });
-      if (reachedTerminal) {
+      if (reachedTerminal || incomingTerminal) {
         void refreshEvents();
         void refreshJobs({ suppressError: true }).catch(() => undefined);
       }
@@ -269,12 +318,31 @@ export default function App() {
       setError(cause instanceof Error ? cause.message : '视频任务处理失败');
     }
   }
+  function openTaskDrawer(id: string) {
+    setDrawerJobId(id);
+  }
+  function closeTaskDrawer() {
+    setDrawerJobId(null);
+  }
   function openJob(id: string) {
+    closeTaskDrawer();
     setActiveNav('事件检索');
-    const relatedEvent = events.find((item) => item.job_id === id);
+    const relatedEvent = eventsByJobId[id]?.[0];
     if (relatedEvent) {
       void choose(relatedEvent);
     }
+  }
+  function openJobPlayback(id: string) {
+    closeTaskDrawer();
+    setActiveNav('事件检索');
+    const relatedEvent = eventsByJobId[id]?.[0];
+    if (!relatedEvent) {
+      return;
+    }
+
+    void choose(relatedEvent).then(() => {
+      setPlaybackMode('annotated');
+    });
   }
   async function review(action: 'confirm' | 'ignore') {
     if (!selected) return;
@@ -314,6 +382,7 @@ export default function App() {
       {selected && activeNav === '事件检索' && <span className="review-shortcuts"><button onClick={() => { setReviewDialog('confirmed'); setReviewer(''); setReviewNote(''); setDisposition(''); }}>带备注确认</button><button onClick={() => { setReviewDialog('ignored'); setReviewer(''); setReviewNote(''); setDisposition(''); }}>带备注忽略</button></span>}
       {selected && reviewHistory.length > 0 && activeNav === '事件检索' && <div className="review-history"><strong>审核时间线</strong>{reviewHistory.map(item => <span key={item.id}>{item.created_at} · {label(item.old_status)} → {label(item.new_status)}{item.reviewer ? ` · ${item.reviewer}` : ''}{item.note ? ` · ${item.note}` : ''}</span>)}</div>}
       {activeNav === '事件检索' ? <>
+        {activeJob && <JobSummaryBar job={activeJob} progressEvent={activeJobProgress} eventCount={activeJobEventCount} onOpen={openTaskDrawer} />}
         <section className="metrics">
           <div><span>今日事件</span><strong>{String(events.length).padStart(2, '0')}</strong><small>+12.4% vs 昨日</small></div>
           <div><span>待复核</span><strong>{String(events.filter(event => event.status === 'unreviewed').length).padStart(2, '0')}</strong><small>需要人工确认</small></div>
@@ -342,6 +411,7 @@ export default function App() {
           </> : <div className="empty detail-empty">选择一个事件查看证据与分析</div>}</div>
         </section>
       </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} progressById={jobPool.progressById} connectionState={jobPool.connectionState} onOpenJob={openJob} onRetryJob={retryJob} onRefresh={async () => refreshJobs({ suppressError: false })} /> : activeNav === '规则配置' ? <RulesPage rules={rules} events={events} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
+      {drawerJob && <JobTaskDrawer job={drawerJob} progressEvent={drawerProgress} eventCount={drawerEventCount} onClose={closeTaskDrawer} onRetry={retryJob} onViewEvents={openJob} onViewPlayback={openJobPlayback} />}
       {deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-event-title"><h3 id="delete-event-title">确认删除事件？</h3><p>事件“{deleting.event_type}”将被永久删除，原视频不会受到影响。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></div></div>}
       {reviewDialog && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true"><h3>{reviewDialog === 'confirmed' ? '确认事件' : '忽略事件'}</h3><label>审核人<input value={reviewer} onChange={event => setReviewer(event.target.value)} placeholder="可选" /></label><label>处置结果<input value={disposition} onChange={event => setDisposition(event.target.value)} placeholder="例如：通知现场人员" /></label><label>备注<textarea value={reviewNote} onChange={event => setReviewNote(event.target.value)} placeholder="填写审核说明" /></label><div className="modal-actions"><button onClick={() => setReviewDialog(null)}>取消</button><button className="confirm" onClick={submitReview} disabled={reviewing}>{reviewing ? '保存中…' : '提交审核'}</button></div></div></div>}
     </main>
