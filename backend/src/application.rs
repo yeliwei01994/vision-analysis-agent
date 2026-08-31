@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::adapters::{MockAnalyzer, VisionAnalyzer};
-use crate::domain::{Detection, Event, EventStatus, JobStatus, VideoJob};
+use crate::domain::{Detection, Event, EventStatus, JobProgressEvent, JobStage, JobStatus, VideoJob};
 use crate::rules::EventRule;
 use crate::storage::MediaStorage;
 use crate::{persistence::Database, queue::TaskQueue};
@@ -16,11 +17,14 @@ pub struct AppState {
     pub rules: Arc<RwLock<HashMap<String, EventRule>>>,
     pub database: Option<Database>,
     pub queue: Option<TaskQueue>,
+    pub job_progress_events: broadcast::Sender<JobProgressEvent>,
+    pub job_progress_sequences: Arc<RwLock<HashMap<Uuid, u64>>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         let mut rules = HashMap::new();
+        let (job_progress_events, _) = broadcast::channel(128);
         rules.insert(
             "person_stay".into(),
             EventRule::new("person_stay", "person", 0.25, 0),
@@ -32,6 +36,8 @@ impl Default for AppState {
             rules: Arc::new(RwLock::new(rules)),
             database: None,
             queue: None,
+            job_progress_events,
+            job_progress_sequences: Arc::default(),
         }
     }
 }
@@ -141,9 +147,47 @@ impl AppState {
     }
     pub fn update_job(&self, id: Uuid, status: JobStatus, progress: u8) {
         if let Some(job) = self.jobs.write().expect("jobs lock poisoned").get_mut(&id) {
+            if job.status.is_terminal() && !status.is_terminal() {
+                return;
+            }
             job.status = status;
             job.progress = progress;
         }
+    }
+    pub fn publish_job_progress(
+        &self,
+        job_id: Uuid,
+        stage: JobStage,
+        progress: u8,
+        message: String,
+    ) {
+        let status = self
+            .job(job_id)
+            .map(|job| {
+                if job.status.is_terminal() {
+                    job.status
+                } else {
+                    JobStatus::Processing
+                }
+            })
+            .unwrap_or(JobStatus::Processing);
+        self.update_job(job_id, status.clone(), progress);
+
+        let sequence = {
+            let mut sequences = self
+                .job_progress_sequences
+                .write()
+                .expect("job progress sequences lock poisoned");
+            let next = sequences.get(&job_id).copied().unwrap_or(0) + 1;
+            sequences.insert(job_id, next);
+            next
+        };
+
+        let event = JobProgressEvent::new(job_id, status, stage, progress, message, sequence);
+        let _ = self.job_progress_events.send(event);
+    }
+    pub fn subscribe_job_progress(&self) -> broadcast::Receiver<JobProgressEvent> {
+        self.job_progress_events.subscribe()
     }
     pub fn event_rules(&self) -> Vec<EventRule> {
         self.rules

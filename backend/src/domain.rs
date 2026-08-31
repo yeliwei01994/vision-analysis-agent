@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -9,6 +10,62 @@ pub enum JobStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+impl JobStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStage {
+    Preparing,
+    Reading,
+    ExtractingFrames,
+    Detecting,
+    AnalyzingEvents,
+    GeneratingPlayback,
+    Finalizing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobProgressEvent {
+    pub job_id: Uuid,
+    pub status: JobStatus,
+    pub stage: JobStage,
+    pub progress: u8,
+    pub message: String,
+    pub updated_at: u64,
+    pub estimated_remaining_ms: Option<u64>,
+    pub sequence: u64,
+}
+
+impl JobProgressEvent {
+    pub fn new(
+        job_id: Uuid,
+        status: JobStatus,
+        stage: JobStage,
+        progress: u8,
+        message: String,
+        sequence: u64,
+    ) -> Self {
+        let updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_millis() as u64;
+        Self {
+            job_id,
+            status,
+            stage,
+            progress,
+            message,
+            updated_at,
+            estimated_remaining_ms: None,
+            sequence,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
