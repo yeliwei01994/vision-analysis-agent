@@ -10,3 +10,6 @@ export interface EventPage { items: EventItem[]; total: number; page: number; pa
 export interface VideoJob { id: string; filename: string; duration_ms: number; status: string; progress: number; source_uri?: string | null; annotated_video_url?: string | null; annotated_video_status?: 'pending' | 'ready' | 'failed' | null; annotated_video_error?: string | null; }
 export interface RuleGeometry { kind: 'polygon'; points: [number, number][]; }
 export interface EventRule { event_type: string; class_name: string; min_confidence: number; min_duration_ms: number; version: string; geometry?: RuleGeometry | null; threshold?: number | null; enabled?: boolean; }
+export type JobStage = 'preparing' | 'reading' | 'extracting_frames' | 'detecting' | 'analyzing_events' | 'generating_playback' | 'finalizing';
+export type JobConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'offline';
+export interface JobProgressEvent { job_id: string; status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'; stage?: JobStage; progress: number | null; message?: string; updated_at?: string; estimated_remaining_ms?: number | null; sequence: number; }
