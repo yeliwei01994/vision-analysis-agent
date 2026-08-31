@@ -118,9 +118,9 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 .job-progress-fill { display: block; height: 100%; min-height: 12px; background: linear-gradient(90deg, #2ab89e 0%, #56e0bb 100%); transition: width 180ms ease; }
 .job-progress-bar.indeterminate .job-progress-fill { width: 38%; animation: job-progress-shift 1.2s linear infinite; }
 .job-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.job-task-actions button { min-height: 44px; padding: 10px 16px; border: 1px solid #2b3e4d; background: transparent; color: #9aabb8; cursor: pointer; transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease, transform 180ms ease; }
-.job-task-actions button:hover:not(:disabled) { border-color: #56e0bb; color: #eef5fb; transform: translateY(-1px); }
-.job-task-actions button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.job-action-button { min-height: 44px; padding: 10px 16px; border: 1px solid #2b3e4d; background: transparent; color: #9aabb8; cursor: pointer; transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease, transform 180ms ease; }
+.job-action-button:hover:not(:disabled) { border-color: #56e0bb; color: #eef5fb; transform: translateY(-1px); }
+.job-action-button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .data-table { border: 1px solid #1e2a35; }
 .data-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1.35fr; gap: 16px; align-items: center; padding: 16px 18px; border-top: 1px solid #1e2a35; color: #b8c6d0; font-size: 12px; }
 .data-row:first-child { border-top: 0; }
@@ -208,6 +208,7 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .feedback, .status, .actions button, .job-task-card, .job-progress-fill, .job-task-actions button { transition: none; }
+  .feedback, .status, .actions button, .job-task-card, .job-progress-fill, .job-action-button { transition: none; }
   .job-progress-bar.indeterminate .job-progress-fill { animation: none; }
+  .job-task-card:hover, .job-action-button:hover:not(:disabled) { transform: none; }
 }

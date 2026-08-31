@@ -143,23 +143,24 @@ export function JobTaskCard({
       </div>
 
       <div className="job-task-actions">
-        <button type="button" onClick={() => onOpen(job.id)} aria-label={`打开 ${job.filename}`}>
+        <button className="job-action-button" type="button" onClick={() => onOpen(job.id)} aria-label={`打开 ${job.filename}`}>
           打开
         </button>
         {canRetry && (
-          <button type="button" onClick={() => onRetry(job.id)} aria-label={`重试 ${job.filename}`}>
+          <button className="job-action-button" type="button" onClick={() => onRetry(job.id)} aria-label={`重试 ${job.filename}`}>
             重试
           </button>
         )}
         {canCancel && (
-          <button type="button" onClick={() => onCancel?.(job.id)} aria-label={`取消 ${job.filename}`}>
+          <button className="job-action-button" type="button" onClick={() => onCancel?.(job.id)} aria-label={`取消 ${job.filename}`}>
             取消
           </button>
         )}
-        <button type="button" onClick={() => onEdit(job)} aria-label={`编辑 ${job.filename}`}>
+        <button className="job-action-button" type="button" onClick={() => onEdit(job)} aria-label={`编辑 ${job.filename}`}>
           编辑
         </button>
         <button
+          className="job-action-button"
           type="button"
           onClick={() => onDelete(job)}
           aria-label={`删除 ${job.filename}`}

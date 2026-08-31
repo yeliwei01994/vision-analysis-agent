@@ -229,6 +229,25 @@ test('preserves edit and delete flows for completed tasks', async () => {
   expect(onRefresh).toHaveBeenCalledTimes(2);
 });
 
+test('uses a shared action-button contract for accessible target sizing and motion overrides', () => {
+  render(
+    <JobTaskCard
+      job={processingJob}
+      progressEvent={processingProgress}
+      onOpen={vi.fn()}
+      onRetry={vi.fn()}
+      onEdit={vi.fn()}
+      onDelete={vi.fn()}
+    />,
+  );
+
+  const actions = screen.getAllByRole('button');
+  expect(actions.length).toBeGreaterThan(0);
+  for (const action of actions) {
+    expect(action).toHaveClass('job-action-button');
+  }
+});
+
 test('exposes determinate progressbar semantics when progress is known', () => {
   render(<JobProgressBar progress={72} label="known progress" />);
 

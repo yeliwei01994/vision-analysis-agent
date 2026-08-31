@@ -70,3 +70,46 @@ Result: production build succeeded.
 ## Concerns
 
 - No cancel callback is currently wired from `App`, so the new card intentionally hides cancellation rather than inventing unsupported behavior.
+
+## Fix Round 1
+
+Reviewer finding addressed: reduced-motion mode previously disabled transitions and shimmer, but card and action-button hover rules still retained positional lift via `transform`.
+
+### Changes
+
+- added a shared `job-action-button` class in `frontend/src/features/JobTaskCard.tsx` for all task-card actions
+- moved the 44px target sizing and hover styling contract onto `.job-action-button` in `frontend/src/styles.css`
+- added explicit reduced-motion hover overrides so `.job-task-card:hover` and `.job-action-button:hover:not(:disabled)` both resolve to `transform: none`
+- added a deterministic component regression in `frontend/src/features/WorkspacePages.test.tsx` that requires every task-card action button to expose the shared class used by the sizing and reduced-motion CSS contract
+
+### Fix Round TDD
+
+1. Red:
+
+```powershell
+npm --prefix frontend test -- src/features/WorkspacePages.test.tsx
+```
+
+Result: failed as expected because the task-card buttons did not yet expose the shared `job-action-button` contract.
+
+2. Green:
+
+```powershell
+npm --prefix frontend test -- src/features/WorkspacePages.test.tsx
+```
+
+Result: passed with `7/7` tests after wiring the shared action-button class and updating the reduced-motion CSS.
+
+### Fix Round Verification
+
+Verification commands for this fix round:
+
+```powershell
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+Results:
+
+- `npm --prefix frontend test` passed with `40/40` tests
+- `npm --prefix frontend run build` succeeded
