@@ -26,6 +26,7 @@ backend/media/
 # IDE and operating system files
 .idea/
 .vscode/
+.worktrees/
 *.swp
 Thumbs.db
 .DS_Store
