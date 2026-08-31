@@ -1,6 +1,6 @@
 use crate::{
     application::AppState,
-    domain::{Detection, Event, Evidence, JobStatus},
+    domain::{Detection, Event, Evidence, JobStage, JobStatus},
     performance::PerformanceSummary,
     rules::RuleEngine,
     video,
@@ -9,6 +9,10 @@ use crate::{
 use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
+
+fn publish_stage(state: &AppState, job_id: Uuid, stage: JobStage, progress: u8, message: &str) {
+    state.publish_job_progress(job_id, stage, progress, message.to_string());
+}
 
 pub fn build_performance_summary(
     job_id: Uuid,
@@ -53,11 +57,12 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         eprintln!("worker job {job_id} not found in memory or database");
         return false;
     };
+    publish_stage(&state, job_id, JobStage::Preparing, 1, "正在准备视频");
     if let Err(error) = refresh_rules(&state).await {
         eprintln!("worker failed to refresh event rules before job {job_id}: {error}");
     }
     println!("worker processing job {job_id}: {}", job.filename);
-    state.update_job(job_id, JobStatus::Processing, 35);
+    publish_stage(&state, job_id, JobStage::Reading, 1, "正在读取视频");
     let probe_started = Instant::now();
     let source_metadata = match job.source_uri.as_deref() {
         Some(source_uri) => video::probe(std::path::Path::new(source_uri)).await,
@@ -65,12 +70,13 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     };
     performance.add_stage_ms("probe", probe_started.elapsed().as_millis());
     let (frame_directory, frames, detector_version) = match job.source_uri.as_deref() {
-        Some(source_uri) => match process_video(source_uri, &mut performance).await {
+        Some(source_uri) => match process_video(&state, job_id, source_uri, &mut performance).await {
             Ok(result) => result,
             Err(error) => {
                 eprintln!("video job {job_id} failed: {error}");
                 performance.errors += 1;
                 state.update_job(job_id, JobStatus::Failed, 100);
+                publish_stage(&state, job_id, JobStage::Finalizing, 100, "处理失败");
                 persist_job_state(&state, job_id, "failed").await;
                 emit_performance_summary(&mut performance, started_at);
                 return false;
@@ -78,7 +84,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         },
         None => (None, Vec::new(), "no-video-source".to_string()),
     };
-    state.update_job(job_id, JobStatus::Processing, 75);
+    publish_stage(&state, job_id, JobStage::AnalyzingEvents, 75, "正在分析事件");
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         current.annotated_video_status = Some("pending".into());
         current.annotated_video_error = None;
@@ -138,6 +144,13 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         playback_fps,
         source_metadata.frame_count,
     );
+    publish_stage(
+        &state,
+        job_id,
+        JobStage::GeneratingPlayback,
+        75,
+        "正在生成检测回放",
+    );
     let encode_started = Instant::now();
     let playback_result = state
         .storage
@@ -177,6 +190,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
     state.update_job(job_id, JobStatus::Completed, 100);
+    publish_stage(&state, job_id, JobStage::Finalizing, 100, "正在整理分析结果");
     if let Some(database) = &state.database {
         if let Some(job) = state.job(job_id) {
             if let Err(error) = database.save_job(&job).await {
@@ -301,10 +315,19 @@ async fn persist_job_state(state: &AppState, job_id: Uuid, reason: &str) {
 }
 
 async fn process_video(
+    state: &AppState,
+    job_id: Uuid,
     source_uri: &str,
     performance: &mut PerformanceSummary,
 ) -> Result<(Option<std::path::PathBuf>, Vec<crate::rules::FrameDetection>, String), String> {
     let interval_ms = video::detection_interval_ms();
+    publish_stage(
+        state,
+        job_id,
+        JobStage::ExtractingFrames,
+        35,
+        "正在抽取关键帧",
+    );
     let extract_started = Instant::now();
     let (directory, frame_paths) =
         video::extract_frames(std::path::Path::new(source_uri), interval_ms).await?;
@@ -328,6 +351,7 @@ async fn process_video(
         })
         .collect::<Vec<_>>();
     performance.batches = batches.len();
+    publish_stage(state, job_id, JobStage::Detecting, 35, "正在进行目标检测");
     let yolo_started = Instant::now();
     let mut pending = tokio::task::JoinSet::new();
     let mut completed = Vec::with_capacity(batches.len());

@@ -1,4 +1,11 @@
-import type { EventItem, EventPage, EventReview, EventRule, VideoJob } from '../types/events';
+import type {
+  EventItem,
+  EventPage,
+  EventReview,
+  EventRule,
+  JobProgressEvent,
+  VideoJob,
+} from '../types/events';
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }, ...init });
@@ -38,4 +45,26 @@ export const api = {
   queryEvents: (params: string) => request<EventPage>(`/api/v1/events/query?${params}`),
   exportEvents: (params: string) => `/api/v1/events/export.csv?${params}`,
   reportEvent: (id: string) => `/api/v1/events/${id}/report.html`,
+  subscribeJobProgress: (
+    onEvent: (event: JobProgressEvent) => void,
+    onStateChange: (state: 'connected' | 'reconnecting') => void,
+  ) => {
+    const source = new EventSource('/api/v1/jobs/progress/stream');
+    const handleOpen = () => onStateChange('connected');
+    const handleProgress = (event: Event) => {
+      onEvent(JSON.parse((event as MessageEvent<string>).data) as JobProgressEvent);
+    };
+    const handleError = () => onStateChange('reconnecting');
+
+    source.addEventListener('open', handleOpen);
+    source.addEventListener('job-progress', handleProgress);
+    source.addEventListener('error', handleError);
+
+    return () => {
+      source.removeEventListener('open', handleOpen);
+      source.removeEventListener('job-progress', handleProgress);
+      source.removeEventListener('error', handleError);
+      source.close();
+    };
+  },
 };

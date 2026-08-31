@@ -1,6 +1,10 @@
 import type { JobProgressEvent, JobStage } from '../types/events';
 
-type TimestampedProgress = JobProgressEvent & { progress: number; updated_at: string; timestamp: number };
+type TimestampedProgress = JobProgressEvent & {
+  progress: number;
+  updated_at: string | number;
+  timestamp: number;
+};
 
 const stageLabels: Record<JobStage, string> = {
   preparing: '正在准备视频',
@@ -22,17 +26,29 @@ const statusLabels: Record<JobProgressEvent['status'], string> = {
 
 const terminalStatuses = new Set<JobProgressEvent['status']>(['completed', 'failed', 'cancelled']);
 
-function isTimestampedProgress(event: JobProgressEvent): event is JobProgressEvent & { progress: number; updated_at: string } {
+function progressTimestamp(updated_at: string | number): number {
+  return typeof updated_at === 'number' ? updated_at : Date.parse(updated_at);
+}
+
+function normalizedProgress(progress: number): number {
+  return progress > 1 ? progress / 100 : progress;
+}
+
+function isTimestampedProgress(event: JobProgressEvent): event is JobProgressEvent & { progress: number; updated_at: string | number } {
   if (event.progress === null || event.updated_at === undefined) {
     return false;
   }
 
-  const timestamp = Date.parse(event.updated_at);
+  const timestamp = progressTimestamp(event.updated_at);
   return Number.isFinite(timestamp);
 }
 
-function toTimestampedProgress(event: JobProgressEvent & { progress: number; updated_at: string }): TimestampedProgress {
-  return { ...event, timestamp: Date.parse(event.updated_at) };
+function toTimestampedProgress(event: JobProgressEvent & { progress: number; updated_at: string | number }): TimestampedProgress {
+  return {
+    ...event,
+    progress: normalizedProgress(event.progress),
+    timestamp: progressTimestamp(event.updated_at),
+  };
 }
 
 function isTerminal(status: JobProgressEvent['status']) {

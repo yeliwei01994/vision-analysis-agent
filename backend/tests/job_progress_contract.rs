@@ -1,5 +1,13 @@
+use axum::{
+    body::Body,
+    http::{header::CONTENT_TYPE, Request, StatusCode},
+};
+use http_body_util::BodyExt;
 use serde_json::json;
+use std::time::Duration;
+use tower::ServiceExt;
 use vision_event_api::{
+    api,
     application::AppState,
     domain::{JobStage, JobStatus},
 };
@@ -75,4 +83,36 @@ async fn publish_job_progress_preserves_terminal_state_and_emits_stored_snapshot
         assert_eq!(event.stage, JobStage::Finalizing);
         assert_eq!(event.message, "stale update");
     }
+}
+
+#[tokio::test]
+async fn progress_stream_returns_sse_content_type_and_json_events() {
+    let state = AppState::default();
+    let job = state.create_job("stream.mp4".into(), 12_000);
+    let response = api::router(state.clone())
+        .oneshot(
+            Request::get("/api/v1/jobs/progress/stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
+
+    state.publish_job_progress(job.id, JobStage::Preparing, 0, "queued".into());
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), async move {
+        response.into_body().frame().await
+    })
+    .await
+    .expect("expected SSE frame before timeout")
+    .expect("expected SSE frame")
+    .expect("expected SSE body frame");
+    let body = frame.into_data().expect("expected SSE data frame");
+    let payload = std::str::from_utf8(&body).unwrap();
+
+    assert!(payload.contains("event: job-progress"));
+    assert!(payload.contains("\"stage\":\"preparing\""));
 }

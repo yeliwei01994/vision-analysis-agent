@@ -1,15 +1,21 @@
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{header::{CACHE_CONTROL, CONTENT_TYPE}, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event as SseEvent, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
 use serde::Serialize;
+use std::convert::Infallible;
 use std::collections::HashMap;
 use std::path::{Component, PathBuf};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use uuid::Uuid;
 
 use crate::{
@@ -69,6 +75,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/videos/upload", post(upload_video))
         .route("/api/v1/videos/:id/process", post(process_video))
         .route("/api/v1/jobs", get(list_jobs))
+        .route("/api/v1/jobs/progress/stream", get(stream_job_progress))
         .route("/api/v1/jobs/:id", get(get_job))
         .route("/api/v1/jobs/:id", put(update_job).delete(delete_job))
         .route("/api/v1/events", get(list_events))
@@ -262,6 +269,28 @@ async fn get_job(
         return Ok(Json(job));
     }
     Err(ApiError::NotFound)
+}
+
+async fn stream_job_progress(
+    State(state): State<AppState>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
+    let stream = BroadcastStream::new(state.subscribe_job_progress()).filter_map(|result| {
+        match result {
+            Ok(event) => Some(Ok(
+                SseEvent::default()
+                    .event("job-progress")
+                    .json_data(event)
+                    .expect("job progress event should serialize"),
+            )),
+            Err(_) => None,
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
 }
 
 async fn update_job(

@@ -55,6 +55,24 @@ describe('job progress', () => {
     expect(estimateRemainingMs(history, current)).toBeNull();
   });
 
+  it('accepts numeric updated_at values from realtime payloads', () => {
+    const history: JobProgressEvent[] = [
+      { ...baseEvent, progress: 0.25, sequence: 1, updated_at: 1_725_091_200_000 },
+    ];
+    const current: JobProgressEvent = { ...baseEvent, progress: 0.5, sequence: 2, updated_at: 1_725_091_210_000 };
+
+    expect(estimateRemainingMs(history, current)).toBe(20000);
+  });
+
+  it('accepts percent-style progress values from backend realtime payloads', () => {
+    const history: JobProgressEvent[] = [
+      { ...baseEvent, progress: 25, sequence: 1, updated_at: 1_725_091_200_000 },
+    ];
+    const current: JobProgressEvent = { ...baseEvent, progress: 50, sequence: 2, updated_at: 1_725_091_210_000 };
+
+    expect(estimateRemainingMs(history, current)).toBe(20000);
+  });
+
   it('maps every stage and status to user-facing labels', () => {
     expect(jobStageLabel('preparing')).toBe('正在准备视频');
     expect(jobStageLabel('reading')).toBe('正在读取视频');
