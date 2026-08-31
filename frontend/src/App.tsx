@@ -24,6 +24,11 @@ type JobPool = {
   connectionState: JobConnectionState;
 };
 
+type JobResultSummary = {
+  eventCount: number;
+  firstEvent: EventItem | null;
+};
+
 const initialJobPool: JobPool = {
   jobsById: {},
   progressById: {},
@@ -84,6 +89,7 @@ export default function App() {
   const [selected, setSelected] = useState<EventItem | null>(null);
   const [rules, setRules] = useState<EventRule[]>([]);
   const [jobPool, setJobPool] = useState<JobPool>(initialJobPool);
+  const [jobResultsById, setJobResultsById] = useState<Record<string, JobResultSummary>>({});
   const [drawerJobId, setDrawerJobId] = useState<string | null>(null);
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState<EventItem['status'] | ''>('');
@@ -106,6 +112,7 @@ export default function App() {
   const [playbackMode, setPlaybackMode] = useState<'original' | 'annotated'>('original');
   const pollingIntervalRef = useRef<number | null>(null);
   const pollingInFlightRef = useRef(false);
+  const jobResultRequestsRef = useRef<Partial<Record<string, Promise<JobResultSummary>>>>({});
 
   const jobs = useMemo(() => orderJobsByPriority(jobPool.jobsById, jobPool.activeJobId), [jobPool.activeJobId, jobPool.jobsById]);
   const activeJob = useMemo(() => {
@@ -120,10 +127,12 @@ export default function App() {
     groupsByJobId[item.job_id] = groupsByJobId[item.job_id] ? [...groupsByJobId[item.job_id], item] : [item];
     return groupsByJobId;
   }, {}), [events]);
-  const activeJobEventCount = activeJob ? (eventsByJobId[activeJob.id]?.length ?? 0) : null;
+  const activeJobResult = activeJob ? jobResultsById[activeJob.id] ?? null : null;
+  const activeJobEventCount = activeJobResult?.eventCount ?? null;
   const drawerJob = drawerJobId ? jobPool.jobsById[drawerJobId] ?? null : null;
   const drawerProgress = drawerJob ? jobPool.progressById[drawerJob.id] ?? null : null;
-  const drawerEventCount = drawerJob ? (eventsByJobId[drawerJob.id]?.length ?? 0) : null;
+  const drawerJobResult = drawerJob ? jobResultsById[drawerJob.id] ?? null : null;
+  const drawerEventCount = drawerJobResult?.eventCount ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -148,10 +157,49 @@ export default function App() {
     }
   }, [drawerJobId, jobPool.jobsById]);
 
+  useEffect(() => {
+    if (activeJob?.status === 'completed') {
+      void ensureJobResult(activeJob.id).catch(() => undefined);
+    }
+  }, [activeJob?.id, activeJob?.status]);
+
   async function refreshEvents() {
     const next = await api.listEvents(50);
     setEvents(next);
     setSelected(current => pickSelectedEvent(next, current));
+  }
+
+  async function ensureJobResult(jobId: string, options?: { force?: boolean }) {
+    const cached = jobResultsById[jobId];
+    if (!options?.force && cached) {
+      return cached;
+    }
+
+    const requestKey = options?.force ? `${jobId}:force` : jobId;
+    const inFlightRequest = jobResultRequestsRef.current[requestKey];
+    if (!options?.force && inFlightRequest) {
+      return inFlightRequest;
+    }
+
+    const request = api.queryEvents(new URLSearchParams({ job_id: jobId, page: '1', page_size: '1' }).toString())
+      .then((page) => {
+        const result = { eventCount: page.total, firstEvent: page.items[0] ?? null };
+        setJobResultsById(current => ({ ...current, [jobId]: result }));
+        delete jobResultRequestsRef.current[requestKey];
+        return result;
+      })
+      .catch((cause) => {
+        delete jobResultRequestsRef.current[requestKey];
+        throw cause;
+      });
+
+    jobResultRequestsRef.current[requestKey] = request;
+    return request;
+  }
+
+  function cacheResultEvent(nextEvent: EventItem) {
+    setEvents(current => current.some((item) => item.id === nextEvent.id) ? current : [nextEvent, ...current]);
+    return nextEvent;
   }
 
   async function refreshJobs(options?: { suppressError?: boolean }) {
@@ -293,6 +341,15 @@ export default function App() {
   }
   async function retryJob(id: string) {
     setError('');
+    setJobResultsById(current => {
+      if (!current[id]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     setJobPool(current => {
       const currentJob = current.jobsById[id];
       if (!currentJob) {
@@ -320,29 +377,54 @@ export default function App() {
   }
   function openTaskDrawer(id: string) {
     setDrawerJobId(id);
+    if (jobPool.jobsById[id]?.status === 'completed') {
+      void ensureJobResult(id).catch((cause) => {
+        setError(cause instanceof Error ? cause.message : '任务结果加载失败');
+      });
+    }
   }
   function closeTaskDrawer() {
     setDrawerJobId(null);
   }
+  async function resolveJobEvent(id: string) {
+    const relatedEvent = eventsByJobId[id]?.[0];
+    if (relatedEvent) {
+      return relatedEvent;
+    }
+
+    const result = await ensureJobResult(id);
+    return result.firstEvent ? cacheResultEvent(result.firstEvent) : null;
+  }
   function openJob(id: string) {
     closeTaskDrawer();
     setActiveNav('事件检索');
-    const relatedEvent = eventsByJobId[id]?.[0];
-    if (relatedEvent) {
-      void choose(relatedEvent);
-    }
+    void resolveJobEvent(id)
+      .then((relatedEvent) => {
+        if (relatedEvent) {
+          return choose(relatedEvent);
+        }
+        return undefined;
+      })
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : '任务结果加载失败');
+      });
   }
   function openJobPlayback(id: string) {
     closeTaskDrawer();
     setActiveNav('事件检索');
-    const relatedEvent = eventsByJobId[id]?.[0];
-    if (!relatedEvent) {
-      return;
-    }
+    void resolveJobEvent(id)
+      .then((relatedEvent) => {
+        if (!relatedEvent) {
+          return;
+        }
 
-    void choose(relatedEvent).then(() => {
-      setPlaybackMode('annotated');
-    });
+        return choose(relatedEvent).then(() => {
+          setPlaybackMode('annotated');
+        });
+      })
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : '任务结果加载失败');
+      });
   }
   async function review(action: 'confirm' | 'ignore') {
     if (!selected) return;
@@ -411,7 +493,7 @@ export default function App() {
           </> : <div className="empty detail-empty">选择一个事件查看证据与分析</div>}</div>
         </section>
       </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} progressById={jobPool.progressById} connectionState={jobPool.connectionState} onOpenJob={openJob} onRetryJob={retryJob} onRefresh={async () => refreshJobs({ suppressError: false })} /> : activeNav === '规则配置' ? <RulesPage rules={rules} events={events} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
-      {drawerJob && <JobTaskDrawer job={drawerJob} progressEvent={drawerProgress} eventCount={drawerEventCount} onClose={closeTaskDrawer} onRetry={retryJob} onViewEvents={openJob} onViewPlayback={openJobPlayback} />}
+      {drawerJob && <JobTaskDrawer job={drawerJob} progressEvent={drawerProgress} eventCount={drawerEventCount} onClose={closeTaskDrawer} onRetry={retryJob} onViewEvents={drawerJobResult?.firstEvent ? openJob : undefined} onViewPlayback={drawerJobResult?.firstEvent ? openJobPlayback : undefined} />}
       {deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-event-title"><h3 id="delete-event-title">确认删除事件？</h3><p>事件“{deleting.event_type}”将被永久删除，原视频不会受到影响。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></div></div>}
       {reviewDialog && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true"><h3>{reviewDialog === 'confirmed' ? '确认事件' : '忽略事件'}</h3><label>审核人<input value={reviewer} onChange={event => setReviewer(event.target.value)} placeholder="可选" /></label><label>处置结果<input value={disposition} onChange={event => setDisposition(event.target.value)} placeholder="例如：通知现场人员" /></label><label>备注<textarea value={reviewNote} onChange={event => setReviewNote(event.target.value)} placeholder="填写审核说明" /></label><div className="modal-actions"><button onClick={() => setReviewDialog(null)}>取消</button><button className="confirm" onClick={submitReview} disabled={reviewing}>{reviewing ? '保存中…' : '提交审核'}</button></div></div></div>}
     </main>

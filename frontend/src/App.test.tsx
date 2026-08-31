@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { vi } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 import App from './App';
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 vi.spyOn(window, 'open').mockImplementation(() => null);
 
@@ -22,6 +22,7 @@ const { event, apiMock, progressMock } = vi.hoisted(() => {
     ignoreEvent: vi.fn().mockResolvedValue({ ...event, status: 'ignored' }),
     listReviews: vi.fn().mockResolvedValue([]),
     reviewEvent: vi.fn().mockResolvedValue(event),
+    queryEvents: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, page_size: 1 }),
     subscribeJobProgress: vi.fn((onEvent, onStateChange) => {
       progressMock.onEvent = onEvent;
       progressMock.onStateChange = onStateChange;
@@ -33,7 +34,28 @@ const { event, apiMock, progressMock } = vi.hoisted(() => {
 
 vi.mock('./api/client', () => ({ api: apiMock }));
 
-afterEach(() => {
+beforeEach(() => {
+  apiMock.listEvents.mockReset().mockResolvedValue([event]);
+  apiMock.listRules.mockReset().mockResolvedValue([]);
+  apiMock.listJobs.mockReset().mockResolvedValue([]);
+  apiMock.createVideo.mockReset();
+  apiMock.uploadVideo.mockReset();
+  apiMock.processVideo.mockReset();
+  apiMock.getJob.mockReset();
+  apiMock.updateJob.mockReset();
+  apiMock.deleteJob.mockReset();
+  apiMock.deleteEvent.mockReset();
+  apiMock.confirmEvent.mockReset().mockResolvedValue({ ...event, status: 'confirmed' });
+  apiMock.ignoreEvent.mockReset().mockResolvedValue({ ...event, status: 'ignored' });
+  apiMock.listReviews.mockReset().mockResolvedValue([]);
+  apiMock.reviewEvent.mockReset().mockResolvedValue(event);
+  apiMock.queryEvents.mockReset().mockResolvedValue({ items: [], total: 0, page: 1, page_size: 1 });
+  apiMock.subscribeJobProgress.mockReset().mockImplementation((onEvent, onStateChange) => {
+    progressMock.onEvent = onEvent;
+    progressMock.onStateChange = onStateChange;
+    return progressMock.unsubscribe;
+  });
+  progressMock.unsubscribe.mockReset();
   progressMock.onEvent = undefined;
   progressMock.onStateChange = undefined;
 });
@@ -86,6 +108,7 @@ test('shows completion result actions from shared task state and keeps event rev
   apiMock.listJobs
     .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 6_000, status: 'processing', progress: 88, source_uri: '/media/clip.mp4', annotated_video_status: 'pending', annotated_video_url: null }])
     .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 6_000, status: 'completed', progress: 100, source_uri: '/media/clip.mp4', annotated_video_status: 'ready', annotated_video_url: '/media/annotated/job-1.mp4' }]);
+  apiMock.queryEvents.mockResolvedValue({ items: [completedEvent], total: 1, page: 1, page_size: 1 });
 
   render(<App />);
   await waitFor(() => expect(apiMock.listJobs).toHaveBeenCalledTimes(1));
@@ -121,6 +144,83 @@ test('shows completion result actions from shared task state and keeps event rev
   fireEvent.click(screen.getByRole('button', { name: /clip\.mp4/ }));
   fireEvent.click(screen.getByRole('button', { name: '播放检测回放' }));
   expect(await screen.findByLabelText('YOLO 检测回放')).toBeInTheDocument();
+});
+
+test('loads a server-backed task result so playback works even when no related event is in the bounded cache', async () => {
+  const uncachedEvent = {
+    ...event,
+    evidence: {
+      frame_urls: ['/media/evidence/event-1/frame-1.jpg'],
+      frames: [{ timestamp_ms: 0, image_url: '/media/evidence/event-1/frame-1.jpg', detections: event.objects }],
+    },
+  };
+  apiMock.listEvents.mockResolvedValueOnce([]);
+  apiMock.listJobs.mockResolvedValueOnce([
+    {
+      id: 'job-1',
+      filename: 'clip.mp4',
+      duration_ms: 6_000,
+      status: 'completed',
+      progress: 100,
+      source_uri: '/media/clip.mp4',
+      annotated_video_status: 'ready',
+      annotated_video_url: '/media/annotated/job-1.mp4',
+    },
+  ]);
+  apiMock.queryEvents.mockResolvedValue({ items: [uncachedEvent], total: 1, page: 1, page_size: 1 });
+
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole('button', { name: '查看任务详情 clip.mp4' }));
+  const drawer = await screen.findByRole('dialog', { name: '任务详情' });
+  expect(await within(drawer).findByRole('button', { name: '播放检测回放' })).toBeInTheDocument();
+
+  fireEvent.click(within(drawer).getByRole('button', { name: '播放检测回放' }));
+
+  expect(await screen.findByRole('heading', { name: '事件详情' })).toBeInTheDocument();
+  expect(await screen.findByLabelText('YOLO 检测回放')).toBeInTheDocument();
+});
+
+test('uses the server-backed result count for completed jobs beyond the bounded event list', async () => {
+  const uncachedEvent = {
+    ...event,
+    evidence: {
+      frame_urls: ['/media/evidence/event-1/frame-1.jpg'],
+      frames: [{ timestamp_ms: 0, image_url: '/media/evidence/event-1/frame-1.jpg', detections: event.objects }],
+    },
+  };
+  const boundedEvents = Array.from({ length: 50 }, (_, index) => ({
+    ...event,
+    id: `event-bounded-${index}`,
+    job_id: `job-bounded-${index}`,
+    event_type: 'person_stay',
+  }));
+  apiMock.listEvents.mockResolvedValueOnce(boundedEvents);
+  apiMock.listJobs.mockResolvedValueOnce([
+    {
+      id: 'job-1',
+      filename: 'clip.mp4',
+      duration_ms: 6_000,
+      status: 'completed',
+      progress: 100,
+      source_uri: '/media/clip.mp4',
+      annotated_video_status: 'failed',
+      annotated_video_url: null,
+    },
+  ]);
+  apiMock.queryEvents.mockResolvedValue({ items: [uncachedEvent], total: 3, page: 1, page_size: 1 });
+
+  render(<App />);
+
+  fireEvent.click(await screen.findByRole('button', { name: '查看任务详情 clip.mp4' }));
+  const drawer = await screen.findByRole('dialog', { name: '任务详情' });
+
+  expect(await within(drawer).findByText('关联事件')).toBeInTheDocument();
+  expect(within(drawer).getByText('3 条')).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '查看事件' })).toBeInTheDocument();
+
+  fireEvent.click(within(drawer).getByRole('button', { name: '查看事件' }));
+  expect(await screen.findByRole('heading', { name: '事件详情' })).toBeInTheDocument();
 });
 
 test('shows failure details and lets the operator retry from the task drawer', async () => {
