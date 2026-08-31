@@ -45,8 +45,29 @@ describe('job progress', () => {
     expect(estimateRemainingMs(history, current)).toBe(20000);
   });
 
-  it('maps stages and statuses to user-facing labels', () => {
+  it('returns null ETA when the current sample has no numeric progress', () => {
+    const history: JobProgressEvent[] = [
+      { ...baseEvent, progress: 0.25, sequence: 1, updated_at: '2026-08-31T08:00:00.000Z' },
+      { ...baseEvent, progress: 0.5, sequence: 2, updated_at: '2026-08-31T08:00:10.000Z' },
+    ];
+    const current: JobProgressEvent = { ...baseEvent, progress: null, sequence: 3, updated_at: '2026-08-31T08:00:20.000Z' };
+
+    expect(estimateRemainingMs(history, current)).toBeNull();
+  });
+
+  it('maps every stage and status to user-facing labels', () => {
     expect(jobStageLabel('preparing')).toBe('正在准备视频');
+    expect(jobStageLabel('reading')).toBe('正在读取视频');
+    expect(jobStageLabel('extracting_frames')).toBe('正在抽取关键帧');
+    expect(jobStageLabel('detecting')).toBe('正在进行目标检测');
+    expect(jobStageLabel('analyzing_events')).toBe('正在分析事件');
+    expect(jobStageLabel('generating_playback')).toBe('正在生成检测回放');
+    expect(jobStageLabel('finalizing')).toBe('正在整理分析结果');
+
     expect(jobStatusLabel('pending')).toBe('等待处理');
+    expect(jobStatusLabel('processing')).toBe('正在处理');
+    expect(jobStatusLabel('completed')).toBe('处理完成');
+    expect(jobStatusLabel('failed')).toBe('处理失败');
+    expect(jobStatusLabel('cancelled')).toBe('已取消');
   });
 });

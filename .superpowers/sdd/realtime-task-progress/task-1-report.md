@@ -78,3 +78,63 @@ Result:
 
 - The new helpers are not yet wired into the wider app flow, so consumers still need to adopt them where realtime job progress is displayed or stored.
 - ETA accuracy still depends on backend timestamps being chronological and progress values staying in the expected 0 to 1 range.
+
+## Fix Round 1
+
+### Additional Regression Coverage
+
+- Added a regression test for the stale ETA case where `current.progress` is `null` even though historical samples exist.
+- Expanded the label assertions to cover every declared job stage and every declared job status.
+
+### Root Cause and Fix
+
+- Root cause: `estimateRemainingMs` filtered `history` and `current` together and then treated the latest timestamped sample as authoritative, which allowed stale history to produce an ETA when the live event was unusable.
+- Fix: require the current event to have a valid timestamp and numeric progress before estimating, then use the current event as the anchor and compare it against earlier valid history samples only.
+
+### Commands and Outputs
+
+#### Focused red test
+
+Command:
+
+`npm --prefix frontend test -- src/features/jobProgress.test.ts`
+
+Result:
+
+- Failed as expected before the fix.
+- Error shown:
+
+`AssertionError: expected 20000 to be null`
+
+#### Focused green test
+
+Command:
+
+`npm --prefix frontend test -- src/features/jobProgress.test.ts`
+
+Result:
+
+- `Test Files 1 passed (1)`
+- `Tests 7 passed (7)`
+
+#### Full frontend test suite
+
+Command:
+
+`npm --prefix frontend test`
+
+Result:
+
+- `Test Files 4 passed (4)`
+- `Tests 24 passed (24)`
+
+#### Frontend build
+
+Command:
+
+`npm --prefix frontend run build`
+
+Result:
+
+- `vite v8.2.2 building client environment for production...`
+- `✓ built in 145ms`

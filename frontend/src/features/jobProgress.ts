@@ -64,19 +64,22 @@ export function jobStatusLabel(status: JobProgressEvent['status']): string {
 }
 
 export function estimateRemainingMs(history: JobProgressEvent[], current: JobProgressEvent): number | null {
-  const samples = [...history, current].filter(isTimestampedProgress).map(toTimestampedProgress).sort((left, right) => left.timestamp - right.timestamp);
-
-  if (samples.length < 2) {
+  if (!isTimestampedProgress(current)) {
     return null;
   }
 
-  const latest = samples[samples.length - 1];
+  const latest = toTimestampedProgress(current);
+  const samples = history
+    .filter(isTimestampedProgress)
+    .map(toTimestampedProgress)
+    .filter(sample => sample.timestamp < latest.timestamp)
+    .sort((left, right) => left.timestamp - right.timestamp);
 
-  if (latest.progress === null || latest.progress <= 0) {
+  if (!samples.length || latest.progress <= 0) {
     return null;
   }
 
-  for (let index = samples.length - 2; index >= 0; index -= 1) {
+  for (let index = samples.length - 1; index >= 0; index -= 1) {
     const previous = samples[index];
     const progressDelta = latest.progress - previous.progress;
     const timeDelta = latest.timestamp - previous.timestamp;
