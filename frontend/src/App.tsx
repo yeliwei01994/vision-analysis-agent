@@ -269,6 +269,13 @@ export default function App() {
       setError(cause instanceof Error ? cause.message : '视频任务处理失败');
     }
   }
+  function openJob(id: string) {
+    setActiveNav('事件检索');
+    const relatedEvent = events.find((item) => item.job_id === id);
+    if (relatedEvent) {
+      void choose(relatedEvent);
+    }
+  }
   async function review(action: 'confirm' | 'ignore') {
     if (!selected) return;
     setReviewing(true); setError(''); setFeedback('');
@@ -302,7 +309,6 @@ export default function App() {
       </header>
       {error && <div className="notice" role="alert">{error}</div>}
       {feedback && <div className="feedback" role="status">{feedback}</div>}
-      {jobPool.connectionState === 'reconnecting' && <div className="feedback" role="status">实时进度连接已断开，正在轮询任务状态…</div>}
       {activeNav === '事件检索' && <div className="event-filters"><select aria-label="状态筛选" value={statusFilter} onChange={event => { setStatusFilter(event.target.value as EventItem['status'] | ''); setPage(1); }}><option value="">全部状态</option><option value="unreviewed">筛选：待复核</option><option value="confirmed">筛选：已确认</option><option value="ignored">筛选：已忽略</option><option value="processing">筛选：处理中</option><option value="resolved">筛选：已处置</option><option value="closed">筛选：已关闭</option></select><select aria-label="严重等级筛选" value={severityFilter} onChange={event => { setSeverityFilter(event.target.value); setPage(1); }}><option value="">全部等级</option><option value="high">筛选：高</option><option value="medium">筛选：中</option><option value="low">筛选：低</option></select><button onClick={() => { const params = new URLSearchParams(); if (statusFilter) params.set('status', statusFilter); if (severityFilter) params.set('severity', severityFilter); window.open(api.exportEvents(params.toString()), '_blank'); }}>导出 CSV</button><button disabled={page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} 页</span><button disabled={groups.length < 20} onClick={() => setPage(value => value + 1)}>下一页</button></div>}
       {selected && activeNav === '事件检索' && <button className="report-link" onClick={() => window.open(api.reportEvent(selected.id), '_blank')}>打开当前事件报告</button>}
       {selected && activeNav === '事件检索' && <span className="review-shortcuts"><button onClick={() => { setReviewDialog('confirmed'); setReviewer(''); setReviewNote(''); setDisposition(''); }}>带备注确认</button><button onClick={() => { setReviewDialog('ignored'); setReviewer(''); setReviewNote(''); setDisposition(''); }}>带备注忽略</button></span>}
@@ -335,7 +341,7 @@ export default function App() {
             <div className="actions"><button className="confirm" onClick={() => review('confirm')} disabled={reviewing || selected.status === 'confirmed'}>{reviewing ? '保存中…' : '确认事件'}</button><button onClick={() => review('ignore')} disabled={reviewing || selected.status === 'ignored'}>{selected.status === 'ignored' ? '已忽略' : '忽略'}</button><button className="danger-button" aria-label={`删除事件 ${selected.event_type}`} onClick={() => setDeleting(selected)}>删除事件</button></div>
           </> : <div className="empty detail-empty">选择一个事件查看证据与分析</div>}</div>
         </section>
-      </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} onRefresh={async () => refreshJobs({ suppressError: false })} /> : activeNav === '规则配置' ? <RulesPage rules={rules} events={events} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
+      </> : activeNav === '视频任务' ? <JobsPage jobs={jobs} progressById={jobPool.progressById} connectionState={jobPool.connectionState} onOpenJob={openJob} onRetryJob={retryJob} onRefresh={async () => refreshJobs({ suppressError: false })} /> : activeNav === '规则配置' ? <RulesPage rules={rules} events={events} onSaved={async () => setRules(await api.listRules())} /> : <ModelsPage />}
       {deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-event-title"><h3 id="delete-event-title">确认删除事件？</h3><p>事件“{deleting.event_type}”将被永久删除，原视频不会受到影响。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={remove}>确认删除</button></div></div></div>}
       {reviewDialog && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true"><h3>{reviewDialog === 'confirmed' ? '确认事件' : '忽略事件'}</h3><label>审核人<input value={reviewer} onChange={event => setReviewer(event.target.value)} placeholder="可选" /></label><label>处置结果<input value={disposition} onChange={event => setDisposition(event.target.value)} placeholder="例如：通知现场人员" /></label><label>备注<textarea value={reviewNote} onChange={event => setReviewNote(event.target.value)} placeholder="填写审核说明" /></label><div className="modal-actions"><button onClick={() => setReviewDialog(null)}>取消</button><button className="confirm" onClick={submitReview} disabled={reviewing}>{reviewing ? '保存中…' : '提交审核'}</button></div></div></div>}
     </main>

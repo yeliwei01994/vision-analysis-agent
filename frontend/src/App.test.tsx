@@ -106,7 +106,7 @@ test('starts polling after a reconnecting signal and stops once the stream recon
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
   expect(apiMock.listJobs).toHaveBeenCalledTimes(2);
   expect(screen.getByText('100%')).toBeInTheDocument();
-  expect(screen.getByText('completed')).toBeInTheDocument();
+  expect(screen.getAllByText('处理完成').length).toBeGreaterThan(0);
 
   act(() => {
     progressMock.onStateChange?.('connected');

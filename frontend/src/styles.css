@@ -1,7 +1,7 @@
 :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e8edf4; background: #0b1017; font-synthesis: none; }
 
 * { box-sizing: border-box; }
- body { margin: 0; min-width: 1100px; }
+ body { margin: 0; min-width: 0; }
  button, input { font: inherit; }
 
 .shell { display: flex; min-height: 100vh; background: radial-gradient(circle at 80% 0%, #172635 0, #0b1017 34rem); }
@@ -92,6 +92,35 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
 .page-heading h2 { margin: 8px 0; }
 .page-heading p:not(.eyebrow) { color: #7f91a2; font-size: 12px; }
+.job-groups { display: grid; gap: 24px; }
+.job-group { display: grid; gap: 16px; }
+.job-group.history { gap: 12px; }
+.job-group-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; color: #92a6b8; }
+.job-group-heading h3 { margin: 0; font-size: 15px; }
+.job-group-heading span { font-size: 11px; color: #657a8d; }
+.job-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.job-grid.history { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.job-task-card { display: grid; gap: 16px; padding: 24px; border: 1px solid #203447; background: linear-gradient(180deg, #13202a 0%, #0f171f 100%); transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
+.job-task-card.compact { gap: 12px; padding: 16px 24px; }
+.job-task-card:hover { border-color: #2e7465; box-shadow: 0 16px 32px #00000024; transform: translateY(-2px); }
+.job-task-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.job-task-card-top h3 { margin: 8px 0 0; word-break: break-word; }
+.job-status-badge { display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px; border: 1px solid #3b301f; color: #e5bd7c; background: #2b2317; font-size: 11px; }
+.job-status-badge.completed { border-color: #285447; color: #56e0bb; background: #132a24; }
+.job-status-badge.failed, .job-status-badge.cancelled { border-color: #5d2e2e; color: #ff9c8d; background: #2b1719; }
+.job-task-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.job-task-meta span, .job-progress-heading span { display: block; color: #6d8091; font-size: 11px; }
+.job-task-meta strong, .job-progress-heading strong { display: block; margin-top: 8px; font-size: 14px; color: #eef5fb; }
+.job-progress-copy { display: grid; gap: 12px; }
+.job-progress-copy p { margin: 0; color: #9bb0c1; font-size: 12px; line-height: 1.5; }
+.job-progress-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.job-progress-bar { position: relative; overflow: hidden; min-height: 14px; border: 1px solid #294256; background: #0b1017; }
+.job-progress-fill { display: block; height: 100%; min-height: 12px; background: linear-gradient(90deg, #2ab89e 0%, #56e0bb 100%); transition: width 180ms ease; }
+.job-progress-bar.indeterminate .job-progress-fill { width: 38%; animation: job-progress-shift 1.2s linear infinite; }
+.job-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.job-task-actions button { min-height: 44px; padding: 10px 16px; border: 1px solid #2b3e4d; background: transparent; color: #9aabb8; cursor: pointer; transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease, transform 180ms ease; }
+.job-task-actions button:hover:not(:disabled) { border-color: #56e0bb; color: #eef5fb; transform: translateY(-1px); }
+.job-task-actions button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .data-table { border: 1px solid #1e2a35; }
 .data-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1.35fr; gap: 16px; align-items: center; padding: 16px 18px; border-top: 1px solid #1e2a35; color: #b8c6d0; font-size: 12px; }
 .data-row:first-child { border-top: 0; }
@@ -158,4 +187,27 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 .playback-video { display: block; width: 100%; max-height: 420px; background: #050a0f; }
 .playback-status { min-height: 72px; display: grid; place-items: center; color: #92a8bd; border: 1px dashed #294256; }
 .playback-error { color: #ff8f7c; }
-@media (prefers-reduced-motion: reduce) { .feedback, .status, .actions button { transition: none; } }
+@keyframes job-progress-shift {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(260%); }
+}
+
+@media (max-width: 900px) {
+  .shell { display: block; }
+  .sidebar { width: auto; padding: 24px 20px 16px; border-right: 0; border-bottom: 1px solid #1e2a35; }
+  nav { margin-top: 24px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .content { width: 100%; max-width: none; padding: 24px 16px 48px; }
+  header, .page-heading, .section-head, .detail-top, .playback-heading { flex-direction: column; gap: 16px; }
+  .metrics, .detail-info, .job-task-meta, .rule-grid, .model-grid { grid-template-columns: 1fr; }
+  .workspace { grid-template-columns: 1fr; }
+  .event-column { border-right: 0; border-bottom: 1px solid #1e2a35; }
+  .job-grid, .job-grid.history { grid-template-columns: 1fr; }
+  .job-task-card, .job-task-card.compact, .page-panel { padding: 16px; }
+  .job-task-card { overflow-wrap: anywhere; }
+  .timeline { padding-bottom: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedback, .status, .actions button, .job-task-card, .job-progress-fill, .job-task-actions button { transition: none; }
+  .job-progress-bar.indeterminate .job-progress-fill { animation: none; }
+}
