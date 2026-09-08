@@ -107,6 +107,10 @@ impl RedisProgressStore {
             .unwrap_or_else(|| "0-0".into()))
     }
 
+    pub async fn capture_stream_cursor(&self) -> redis::RedisResult<String> {
+        self.latest_stream_id().await
+    }
+
     pub async fn read_after(
         &self,
         cursor: &str,

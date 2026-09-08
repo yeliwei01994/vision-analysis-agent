@@ -50,3 +50,11 @@ Follow-up verification: frontend snapshot/attempt focused suite 19/19 passed; fr
 - Redis SSE checks whether Last-Event-ID has fallen behind the trimmed stream head. It publishes a trimmed full snapshot and resets the cursor before resuming stream reads.
 
 Verification for this follow-up: frontend full suite 50/50 passed; frontend build passed; cargo check --all-targets passed; Redis progress/SSE focused suite 9/9 passed; worker terminal-save focused test 1/1 passed; git diff --check passed.
+
+## Final Redis trim-recovery ordering follow-up
+
+- Redis SSE trim recovery now captures the stream cursor before loading snapshots. XREAD resumes from that captured cursor, so an event published between the two reads cannot be skipped.
+- Frontend progress merging now treats an equal sequence and attempt as an idempotent replay, preserving the calibrated snapshot when the same stream event is received again.
+- Added a regression that interleaves terminal publication between cursor capture and snapshot loading, then verifies the terminal event is still replayed with matching sequence and attempt metadata.
+
+Verification for this follow-up: Redis/SSE contract suite 10/10 passed; frontend progress focused suite 18/18 passed; frontend full suite 51/51 passed; frontend build passed; cargo check passed; git diff --check passed. cargo fmt -- --check still reports pre-existing formatting differences across the accumulated branch and was not applied because it would rewrite unrelated files.

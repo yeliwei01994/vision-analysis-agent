@@ -121,6 +121,22 @@ describe('job progress', () => {
     expect(mergeJobProgress(failed, retry)).toEqual(retry);
   });
 
+  it('keeps the snapshot when the same sequence and attempt is replayed after calibration', () => {
+    const snapshot = {
+      ...baseEvent,
+      status: 'failed' as const,
+      progress: 75,
+      sequence: 8,
+      attempt: 2,
+    };
+    const replay = {
+      ...snapshot,
+      message: 'replayed stream payload',
+    };
+
+    expect(mergeJobProgress(snapshot, replay)).toEqual(snapshot);
+  });
+
   it('calibrates visible jobs from a full progress snapshot after reconnect or lag', () => {
     const merged = mergeJobProgressSnapshot(
       { 'job-1': { ...baseJob, status: 'processing', progress: 1 } },

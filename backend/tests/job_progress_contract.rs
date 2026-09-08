@@ -370,3 +370,34 @@ async fn redis_sse_recalibrates_when_last_event_cursor_was_trimmed() {
     }).await.expect("trimmed cursor must force snapshot calibration");
     assert!(recovered.contains("\"progress\":20"));
 }
+
+#[tokio::test]
+async fn redis_trim_recovery_keeps_terminal_event_published_between_cursor_and_snapshot() {
+    dotenvy::dotenv().ok();
+    let Ok(redis_url) = std::env::var("REDIS_URL") else {
+        eprintln!("REDIS_URL is required for Redis cursor ordering test");
+        return;
+    };
+    let store = RedisProgressStore::new(
+        &redis_url,
+        format!("vision:test:cursor-ordering:{}", uuid::Uuid::new_v4()),
+    ).unwrap();
+    store.clear().await.unwrap();
+    let job_id = uuid::Uuid::new_v4();
+    store.publish(vision_event_api::domain::JobProgressEvent::new(
+        job_id, JobStatus::Processing, Some(JobStage::Detecting), 10, Some("processing".into()), 0, 1,
+    )).await.unwrap().unwrap();
+
+    let cursor = store.capture_stream_cursor().await.unwrap();
+    let failed = store.publish(vision_event_api::domain::JobProgressEvent::new(
+        job_id, JobStatus::Failed, Some(JobStage::Detecting), 10, Some("worker failed".into()), 0, 1,
+    )).await.unwrap().unwrap();
+    let snapshot = store.snapshots().await.unwrap();
+    assert_eq!(snapshot[0].status, JobStatus::Failed);
+
+    let replayed = store.read_after(&cursor, 0).await.unwrap();
+    let replayed_terminal = replayed.into_iter().find(|event| event.event.job_id == job_id).unwrap();
+    assert_eq!(replayed_terminal.stream_id, failed.stream_id);
+    assert_eq!(replayed_terminal.event.sequence, snapshot[0].sequence);
+    assert_eq!(replayed_terminal.event.attempt, snapshot[0].attempt);
+}

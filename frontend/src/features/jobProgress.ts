@@ -92,6 +92,10 @@ export function mergeJobProgress(previous: JobProgressEvent, next: JobProgressEv
     return next;
   }
 
+  if (next.sequence === previous.sequence) {
+    return previous;
+  }
+
   if (next.sequence < previous.sequence) {
     return previous;
   }

@@ -436,7 +436,7 @@ async fn stream_redis_progress(
     let mut cursor = match last_event_id {
         Some(cursor) => cursor,
         None => progress_store
-            .latest_stream_id()
+            .capture_stream_cursor()
             .await
             .unwrap_or_else(|error| {
                 eprintln!("failed to read Redis progress cursor: {error}");
@@ -458,12 +458,19 @@ async fn stream_redis_progress(
     loop {
         match progress_store.cursor_is_trimmed(&cursor).await {
             Ok(true) => {
+                let resume_cursor = progress_store
+                    .capture_stream_cursor()
+                    .await
+                    .unwrap_or_else(|error| {
+                        eprintln!("failed to capture Redis progress cursor after trim: {error}");
+                        "0-0".into()
+                    });
                 let snapshot = progress_store.snapshots().await.unwrap_or_else(|error| {
                     eprintln!("failed to read Redis progress snapshot after trim: {error}");
                     state.job_progress_snapshot()
                 });
                 if sender.send(Ok(snapshot_sse("trimmed", snapshot))).await.is_err() { return; }
-                cursor = progress_store.latest_stream_id().await.unwrap_or_else(|_| "0-0".into());
+                cursor = resume_cursor;
                 continue;
             }
             Ok(false) => {}
