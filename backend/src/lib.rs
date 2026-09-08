@@ -4,6 +4,7 @@ pub mod application;
 pub mod domain;
 pub mod persistence;
 pub mod performance;
+pub mod progress;
 pub mod queue;
 pub mod rules;
 pub mod storage;

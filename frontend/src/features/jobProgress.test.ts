@@ -16,7 +16,7 @@ const baseEvent: JobProgressEvent = {
   job_id: 'job-1',
   status: 'processing',
   stage: 'reading',
-  progress: 0.25,
+  progress: 25,
   sequence: 2,
 };
 
@@ -31,22 +31,22 @@ const baseJob: VideoJob = {
 
 describe('job progress', () => {
   it('accepts a newer event for the same job', () => {
-    const next: JobProgressEvent = { ...baseEvent, stage: 'extracting_frames', progress: 0.5, sequence: 3 };
+    const next: JobProgressEvent = { ...baseEvent, stage: 'extracting_frames', progress: 50, sequence: 3 };
 
     expect(mergeJobProgress(baseEvent, next)).toEqual(next);
   });
 
   it('keeps the current event when the next event is older or from another job', () => {
-    const older: JobProgressEvent = { ...baseEvent, stage: 'detecting', progress: 0.1, sequence: 1 };
-    const otherJob: JobProgressEvent = { ...baseEvent, job_id: 'job-2', stage: 'detecting', progress: 0.1, sequence: 4 };
+    const older: JobProgressEvent = { ...baseEvent, stage: 'detecting', progress: 10, sequence: 1 };
+    const otherJob: JobProgressEvent = { ...baseEvent, job_id: 'job-2', stage: 'detecting', progress: 10, sequence: 4 };
 
     expect(mergeJobProgress(baseEvent, older)).toEqual(baseEvent);
     expect(mergeJobProgress(baseEvent, otherJob)).toEqual(baseEvent);
   });
 
   it('prevents a terminal job from regressing back to processing', () => {
-    const completed: JobProgressEvent = { ...baseEvent, status: 'completed', progress: 1, sequence: 5 };
-    const regressing: JobProgressEvent = { ...completed, status: 'processing', progress: 0.8, sequence: 6 };
+    const completed: JobProgressEvent = { ...baseEvent, status: 'completed', progress: 100, sequence: 5 };
+    const regressing: JobProgressEvent = { ...completed, status: 'processing', progress: 80, sequence: 6 };
 
     expect(mergeJobProgress(completed, regressing)).toEqual(completed);
   });
@@ -57,17 +57,17 @@ describe('job progress', () => {
 
   it('extrapolates a remaining time from two increasing samples', () => {
     const history: JobProgressEvent[] = [
-      { ...baseEvent, progress: 0.25, sequence: 1, updated_at: '2026-08-31T08:00:00.000Z' },
+      { ...baseEvent, progress: 25, sequence: 1, updated_at: '2026-08-31T08:00:00.000Z' },
     ];
-    const current: JobProgressEvent = { ...baseEvent, progress: 0.5, sequence: 2, updated_at: '2026-08-31T08:00:10.000Z' };
+    const current: JobProgressEvent = { ...baseEvent, progress: 50, sequence: 2, updated_at: '2026-08-31T08:00:10.000Z' };
 
     expect(estimateRemainingMs(history, current)).toBe(20000);
   });
 
   it('returns null ETA when the current sample has no numeric progress', () => {
     const history: JobProgressEvent[] = [
-      { ...baseEvent, progress: 0.25, sequence: 1, updated_at: '2026-08-31T08:00:00.000Z' },
-      { ...baseEvent, progress: 0.5, sequence: 2, updated_at: '2026-08-31T08:00:10.000Z' },
+      { ...baseEvent, progress: 25, sequence: 1, updated_at: '2026-08-31T08:00:00.000Z' },
+      { ...baseEvent, progress: 50, sequence: 2, updated_at: '2026-08-31T08:00:10.000Z' },
     ];
     const current: JobProgressEvent = { ...baseEvent, progress: null, sequence: 3, updated_at: '2026-08-31T08:00:20.000Z' };
 
@@ -76,9 +76,9 @@ describe('job progress', () => {
 
   it('accepts numeric updated_at values from realtime payloads', () => {
     const history: JobProgressEvent[] = [
-      { ...baseEvent, progress: 0.25, sequence: 1, updated_at: 1_725_091_200_000 },
+      { ...baseEvent, progress: 25, sequence: 1, updated_at: 1_725_091_200_000 },
     ];
-    const current: JobProgressEvent = { ...baseEvent, progress: 0.5, sequence: 2, updated_at: 1_725_091_210_000 };
+    const current: JobProgressEvent = { ...baseEvent, progress: 50, sequence: 2, updated_at: 1_725_091_210_000 };
 
     expect(estimateRemainingMs(history, current)).toBe(20000);
   });
@@ -105,6 +105,12 @@ describe('job progress', () => {
       status: 'processing',
       progress: 35,
     });
+  });
+
+  it('treats backend progress 1 as one percent, not one hundred percent', () => {
+    const next = applyJobProgressToJob(baseJob, { ...baseEvent, progress: 1 });
+
+    expect(next.progress).toBe(1);
   });
 
   it('preserves the active in-flight job when a stale snapshot does not include it yet', () => {

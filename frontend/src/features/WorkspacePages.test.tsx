@@ -253,3 +253,10 @@ test('exposes determinate progressbar semantics when progress is known', () => {
 
   expect(screen.getByRole('progressbar', { name: 'known progress' })).toHaveAttribute('aria-valuenow', '72');
 });
+
+test('renders backend progress value 1 as one percent', () => {
+  render(<JobTaskCard job={{ ...processingJob, progress: 1 }} progressEvent={{ ...processingProgress, progress: 1 }} onOpen={vi.fn()} onRetry={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+  expect(screen.getByRole('progressbar', { name: 'processing.mp4 进度' })).toHaveAttribute('aria-valuenow', '1');
+  expect(screen.getByText('1%')).toBeInTheDocument();
+});

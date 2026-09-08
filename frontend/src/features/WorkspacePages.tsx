@@ -46,18 +46,21 @@ export function JobsPage({
   const [deleting, setDeleting] = useState<VideoJob | null>(null);
   const [mutating, setMutating] = useState(false);
   const [error, setError] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'>('all');
+  const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(() => new Set());
+  const visibleJobs = jobs.filter((job) => !hiddenJobIds.has(job.id) && (statusFilter === 'all' || jobStatus(job, progressById[job.id]) === statusFilter));
+  const updatedAt = (job: VideoJob) => typeof job.updated_at === 'number' ? job.updated_at : Date.parse(job.updated_at ?? '') || 0;
   const primaryJobs = jobs
-    .filter((job) => !isCompletedJob(job, progressById[job.id]))
+    .filter((job) => visibleJobs.includes(job) && !isCompletedJob(job, progressById[job.id]))
     .sort((left, right) => {
       const leftActive = isActiveJob(left, progressById[left.id]);
       const rightActive = isActiveJob(right, progressById[right.id]);
-      if (leftActive === rightActive) {
-        return 0;
+      if (leftActive !== rightActive) {
+        return leftActive ? -1 : 1;
       }
-
-      return leftActive ? -1 : 1;
+      return updatedAt(right) - updatedAt(left);
     });
-  const historyJobs = jobs.filter((job) => isCompletedJob(job, progressById[job.id]));
+  const historyJobs = visibleJobs.filter((job) => isCompletedJob(job, progressById[job.id])).sort((left, right) => updatedAt(right) - updatedAt(left));
   async function refresh() { setRefreshing(true); try { await onRefresh(); } finally { setRefreshing(false); } }
   async function saveEdit() {
     if (!editing) return;
@@ -71,11 +74,11 @@ export function JobsPage({
   async function confirmDelete() {
     if (!deleting) return;
     setMutating(true); setError('');
-    try { await api.deleteJob(deleting.id); setDeleting(null); await onRefresh(); }
+    try { await api.deleteJob(deleting.id); setHiddenJobIds(current => new Set(current).add(deleting.id)); setDeleting(null); await onRefresh(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : '任务删除失败'); }
     finally { setMutating(false); }
   }
-  return <section className="page-panel"><div className="page-heading"><div><p className="eyebrow">VIDEO TASKS</p><h2>视频任务</h2><p>查看上传记录、处理状态和分析进度。</p></div><button className="primary" onClick={refresh} disabled={refreshing}>{refreshing ? '刷新中…' : '刷新任务'}</button></div>{connectionState === 'reconnecting' && <div className="feedback" role="status">实时进度连接已断开，正在轮询任务状态…</div>}{error && <div className="notice" role="alert">{error}</div>}{jobs.length === 0 ? <div className="empty">暂无视频任务</div> : <div className="job-groups">{primaryJobs.length > 0 && <div className="job-group"><div className="job-group-heading"><h3>任务总览</h3><span>{primaryJobs.length} 个任务</span></div><div className="job-grid">{primaryJobs.map((job) => <JobTaskCard key={job.id} job={job} progressEvent={progressById[job.id]} onOpen={onOpenJob} onRetry={onRetryJob} onEdit={(nextJob) => { setEditing(nextJob); setFilename(nextJob.filename); setError(''); }} onDelete={(nextJob) => { setDeleting(nextJob); setError(''); }} />)}</div></div>}{historyJobs.length > 0 && <div className="job-group history"><div className="job-group-heading"><h3>已完成任务</h3><span>{historyJobs.length} 个任务</span></div><div className="job-grid history">{historyJobs.map((job) => <JobTaskCard key={job.id} job={job} progressEvent={progressById[job.id]} onOpen={onOpenJob} onRetry={onRetryJob} onEdit={(nextJob) => { setEditing(nextJob); setFilename(nextJob.filename); setError(''); }} onDelete={(nextJob) => { setDeleting(nextJob); setError(''); }} />)}</div></div>}</div>}{editing && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-job-title"><h3 id="edit-job-title">编辑视频任务</h3><label>任务文件名<input aria-label="任务文件名" value={filename} onChange={(event) => setFilename(event.target.value)} autoFocus /></label><div className="modal-actions"><button onClick={() => setEditing(null)}>取消</button><button className="confirm" onClick={saveEdit} disabled={mutating}>{mutating ? '保存中…' : '保存修改'}</button></div></div></div>}{deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-job-title"><h3 id="delete-job-title">确认删除任务？</h3><p>任务“{deleting.filename}”将从列表和事件中移除，物理视频文件会保留。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={confirmDelete} disabled={mutating}>{mutating ? '删除中…' : '确认删除'}</button></div></div></div>}</section>;
+  return <section className="page-panel"><div className="page-heading"><div><p className="eyebrow">VIDEO TASKS</p><h2>视频任务</h2><p>查看上传记录、处理状态和分析进度。</p></div><div className="page-heading-actions"><label>状态筛选<select aria-label="任务状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">全部状态</option><option value="pending">等待处理</option><option value="processing">正在处理</option><option value="completed">处理完成</option><option value="failed">处理失败</option><option value="cancelled">已取消</option></select></label><button className="primary" onClick={refresh} disabled={refreshing}>{refreshing ? '刷新中…' : '刷新任务'}</button></div></div>{connectionState === 'reconnecting' && <div className="feedback" role="status">实时进度连接已断开，正在轮询任务状态…</div>}{error && <div className="notice" role="alert">{error}</div>}{visibleJobs.length === 0 ? <div className="empty">暂无符合条件的视频任务</div> : <div className="job-groups">{primaryJobs.length > 0 && <div className="job-group"><div className="job-group-heading"><h3>任务总览</h3><span>{primaryJobs.length} 个任务</span></div><div className="job-grid">{primaryJobs.map((job) => <JobTaskCard key={job.id} job={job} progressEvent={progressById[job.id]} onOpen={onOpenJob} onRetry={onRetryJob} onEdit={(nextJob) => { setEditing(nextJob); setFilename(nextJob.filename); setError(''); }} onDelete={(nextJob) => { setDeleting(nextJob); setError(''); }} />)}</div></div>}{historyJobs.length > 0 && <div className="job-group history"><div className="job-group-heading"><h3>已完成任务</h3><span>{historyJobs.length} 个任务</span></div><div className="job-grid history">{historyJobs.map((job) => <JobTaskCard key={job.id} job={job} progressEvent={progressById[job.id]} onOpen={onOpenJob} onRetry={onRetryJob} onEdit={(nextJob) => { setEditing(nextJob); setFilename(nextJob.filename); setError(''); }} onDelete={(nextJob) => { setDeleting(nextJob); setError(''); }} />)}</div></div>}</div>}{editing && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-job-title"><h3 id="edit-job-title">编辑视频任务</h3><label>任务文件名<input aria-label="任务文件名" value={filename} onChange={(event) => setFilename(event.target.value)} autoFocus /></label><div className="modal-actions"><button onClick={() => setEditing(null)}>取消</button><button className="confirm" onClick={saveEdit} disabled={mutating}>{mutating ? '保存中…' : '保存修改'}</button></div></div></div>}{deleting && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-job-title"><h3 id="delete-job-title">确认删除任务？</h3><p>任务“{deleting.filename}”将从列表和事件中移除，物理视频文件会保留。</p><div className="modal-actions"><button onClick={() => setDeleting(null)}>取消</button><button className="danger-button" onClick={confirmDelete} disabled={mutating}>{mutating ? '删除中…' : '确认删除'}</button></div></div></div>}</section>;
 }
 
 export function RulesPage({ rules, events, onSaved }: { rules: EventRule[]; events: EventItem[]; onSaved: () => Promise<void> }) {

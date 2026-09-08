@@ -100,6 +100,9 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 
 .page-panel { min-height: 530px; margin-top: 44px; padding: 28px; border: 1px solid #1e2a35; background: #0f171f; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+.page-heading-actions { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.page-heading-actions label { display: grid; gap: 6px; color: #6d8091; font-size: 10px; }
+.page-heading-actions select { min-height: 44px; padding: 0 10px; border: 1px solid #2b3e4d; background: #111c25; color: #b9cbd6; }
 .page-heading h2 { margin: 8px 0; }
 .page-heading p:not(.eyebrow) { color: #7f91a2; font-size: 12px; }
 .job-groups { display: grid; gap: 24px; }
@@ -164,7 +167,7 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .danger-button { border-color: #f49b89 !important; color: #f49b89 !important; }
 .feedback { margin-top: 16px; padding: 10px 14px; color: #56e0bb; border: 1px solid #2e7465; background: #102b28; font-size: 12px; transition: opacity 160ms ease, transform 160ms ease; }
-.task-drawer { width: min(880px, calc(100vw - 40px)); display: grid; gap: 20px; }
+.task-drawer { width: min(880px, calc(100vw - 40px)); max-height: min(90vh, 900px); overflow-y: auto; display: grid; gap: 20px; }
 .task-drawer-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .task-drawer-top-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .task-drawer-close { min-width: 88px; }
@@ -241,6 +244,9 @@ nav { margin-top: 72px; display: grid; gap: 8px; }
   .timeline { padding-bottom: 8px; }
   .job-summary-bar, .task-drawer-top, .task-drawer-top-actions { flex-direction: column; align-items: stretch; }
   .job-summary-meta { justify-items: start; text-align: left; min-width: 0; }
+  .page-heading-actions { width: 100%; align-items: stretch; }
+  .page-heading-actions label, .page-heading-actions select, .page-heading-actions .primary { width: 100%; }
+  .task-drawer { width: calc(100vw - 24px); max-height: calc(100vh - 24px); padding: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

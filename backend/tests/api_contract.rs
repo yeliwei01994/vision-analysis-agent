@@ -6,6 +6,7 @@ use axum::{
 use http_body_util::BodyExt;
 use std::env;
 use tower::ServiceExt;
+use uuid::Uuid;
 use vision_event_api::{
     api,
     application::AppState,
@@ -247,7 +248,7 @@ async fn upload_then_process_video_reports_processing_failure_for_invalid_media(
     let processed: serde_json::Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(processed["status"], "failed");
-    assert_eq!(processed["progress"], 100);
+    assert_eq!(processed["progress"], 35);
 }
 
 #[tokio::test]
@@ -636,4 +637,46 @@ async fn pending_job_can_be_deleted() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn process_endpoint_retries_a_failed_job_with_a_new_attempt() {
+    dotenvy::dotenv().ok();
+    let Ok(redis_url) = std::env::var("REDIS_URL") else {
+        eprintln!("REDIS_URL is required for the retry queue integration test");
+        return;
+    };
+    let queue = vision_event_api::queue::TaskQueue::new(
+        &redis_url,
+        format!("vision:test:jobs:{}", Uuid::new_v4()),
+    )
+    .unwrap();
+    let state = AppState::default().with_integrations(None, Some(queue.clone()));
+    let job = state.create_job("retry.mp4".into(), 1_000);
+    state.update_job(job.id, vision_event_api::domain::JobStatus::Failed, 35);
+
+    let response = api::router(state.clone())
+        .oneshot(
+            Request::post(format!("/api/v1/videos/{}/process", job.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &response.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["attempt"], 1);
+
+    let queued = queue.consume_once().await.unwrap().unwrap();
+    assert_eq!(queued.job_id, job.id.to_string());
+    assert_eq!(queued.attempt, 1);
+    assert_eq!(
+        state.job(job.id).unwrap().status,
+        vision_event_api::domain::JobStatus::Pending
+    );
 }

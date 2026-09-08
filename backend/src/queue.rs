@@ -9,9 +9,13 @@ pub struct QueueMessage {
 }
 impl QueueMessage {
     pub fn new(job_id: Uuid) -> Self {
+        Self::for_attempt(job_id, 0)
+    }
+
+    pub fn for_attempt(job_id: Uuid, attempt: u32) -> Self {
         Self {
             job_id: job_id.to_string(),
-            attempt: 0,
+            attempt,
         }
     }
 }

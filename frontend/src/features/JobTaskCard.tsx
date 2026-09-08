@@ -1,5 +1,5 @@
 import { JobProgressBar } from './JobProgressBar';
-import { jobStageLabel, jobStatusLabel } from './jobProgress';
+import { jobStageLabel, jobStatusLabel, progressPercent } from './jobProgress';
 import type { JobProgressEvent, VideoJob } from '../types/events';
 
 type JobTaskCardProps = {
@@ -75,7 +75,7 @@ function progressValue(job: VideoJob, progressEvent?: JobProgressEvent | null) {
   }
 
   if (typeof progressEvent?.progress === 'number') {
-    return progressEvent.progress > 1 ? progressEvent.progress : progressEvent.progress * 100;
+    return progressPercent(progressEvent.progress);
   }
 
   return job.progress;

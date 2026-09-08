@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api/client';
-import { applyJobProgressToJob, buildJobProgressFromJob, buildRetryProgress, jobActivityLabel, mergeJobProgress, mergeJobsSnapshot, orderJobsByPriority } from './features/jobProgress';
+import { applyJobProgressToJob, buildJobProgressFromJob, buildRetryProgress, jobActivityLabel, mergeJobProgress, mergeJobsSnapshot, orderJobsByPriority, progressPercent } from './features/jobProgress';
 import { JobTaskDrawer } from './features/JobTaskDrawer';
 import { JobsPage, ModelsPage, RulesPage } from './features/WorkspacePages';
 import { detectionSummary, displayEventType, fallbackAnalysis, groupEvents, preciseTime } from './features/eventPresentation';
@@ -61,7 +61,7 @@ type JobSummaryBarProps = {
 
 function JobSummaryBar({ job, progressEvent, eventCount, onOpen }: JobSummaryBarProps) {
   const progress = typeof progressEvent?.progress === 'number'
-    ? Math.max(0, Math.min(100, Math.round(progressEvent.progress > 1 ? progressEvent.progress : progressEvent.progress * 100)))
+    ? progressPercent(progressEvent.progress)
     : Math.max(0, Math.min(100, Math.round(job.progress)));
   const activity = jobActivityLabel(progressEvent, job.status);
   const status = progressEvent?.status ?? job.status;
@@ -211,8 +211,8 @@ export default function App() {
     let shouldRefreshEvents = false;
     try {
       const nextJobs = await api.listJobs();
+      shouldRefreshEvents = nextJobs.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status) && !['completed', 'failed', 'cancelled'].includes(jobPool.jobsById[item.id]?.status ?? ''));
       setJobPool(current => {
-        shouldRefreshEvents = nextJobs.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status) && !['completed', 'failed', 'cancelled'].includes(current.jobsById[item.id]?.status ?? ''));
         const merged = mergeJobsSnapshot(current.jobsById, nextJobs, current.progressById, current.activeJobId);
         return { ...current, ...merged, activeJobId: pickActiveJobId(merged.jobsById, current.activeJobId) };
       });
@@ -270,6 +270,7 @@ export default function App() {
       setJobPool(current => ({ ...current, connectionState: state }));
       if (state === 'reconnecting') {
         startPolling();
+        void refreshJobs({ suppressError: true }).catch(() => undefined);
       } else {
         stopPolling();
       }

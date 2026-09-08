@@ -39,10 +39,10 @@ function progressTimestamp(updated_at: string | number): number {
 }
 
 function normalizedProgress(progress: number): number {
-  return progress > 1 ? progress / 100 : progress;
+  return progress / 100;
 }
 
-function progressPercent(progress: number): number {
+export function progressPercent(progress: number): number {
   return Math.max(0, Math.min(100, Math.round(normalizedProgress(progress) * 100)));
 }
 

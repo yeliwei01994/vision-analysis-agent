@@ -2,6 +2,7 @@ use vision_event_api::{
     api,
     application::AppState,
     persistence::{Database, DatabaseConfig},
+    progress::RedisProgressStore,
     queue::TaskQueue,
 };
 
@@ -27,11 +28,16 @@ async fn main() {
             None
         }
     };
-    let queue = match std::env::var("REDIS_URL") {
-        Ok(url) => TaskQueue::new(&url, "vision:jobs").ok(),
-        Err(_) => None,
-    };
-    let state = AppState::default().with_integrations(database.clone(), queue.clone());
+    let redis_url = std::env::var("REDIS_URL").ok();
+    let queue = redis_url
+        .as_deref()
+        .and_then(|url| TaskQueue::new(url, "vision:jobs").ok());
+    let progress_store = redis_url
+        .as_deref()
+        .and_then(|url| RedisProgressStore::new(url, "vision:job-progress").ok());
+    let state = AppState::default()
+        .with_integrations(database.clone(), queue.clone())
+        .with_progress_store(progress_store);
     if let Some(database) = &database {
         match database.list_rules().await {
             Ok(rules) => for rule in rules { state.update_rule(rule.event_type.clone(), rule); },

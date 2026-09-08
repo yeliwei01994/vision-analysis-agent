@@ -1,6 +1,6 @@
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
-    http::{header::{CACHE_CONTROL, CONTENT_TYPE}, StatusCode},
+    http::{header::{CACHE_CONTROL, CONTENT_TYPE}, HeaderMap, StatusCode},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
         IntoResponse, Response,
@@ -15,12 +15,13 @@ use std::collections::HashMap;
 use std::path::{Component, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::{
     application::AppState,
-    domain::{Event, EventReview, EventStatus, VideoJob},
+    domain::{Event, EventReview, EventStatus, JobProgressEvent, JobStage, JobStatus, VideoJob},
+    progress::StoredJobProgress,
     rules::{EventRule, Geometry},
 };
 
@@ -64,6 +65,12 @@ pub struct EventListQuery { pub limit: Option<usize> }
 
 #[derive(Debug, Serialize)]
 pub struct EventPage { pub items: Vec<Event>, pub total: usize, pub page: usize, pub page_size: usize }
+
+#[derive(Debug, Serialize)]
+struct JobProgressSnapshot {
+    reason: &'static str,
+    jobs: Vec<JobProgressEvent>,
+}
 
 fn default_rule_enabled() -> bool { true }
 
@@ -201,9 +208,27 @@ async fn upload_video(
         let _ = database.save_job(&job).await;
     }
     if let Some(queue) = &state.queue {
-        state.update_job(job.id, crate::domain::JobStatus::Processing, 1);
+        let queued = state
+            .update_job_progress(
+                job.id,
+                JobStatus::Processing,
+                1,
+                Some(JobStage::Preparing),
+                Some("已加入处理队列".into()),
+            )
+            .ok_or(ApiError::NotFound)?;
+        if let Some(database) = &state.database {
+            database
+                .save_job(&queued)
+                .await
+                .map_err(|_| ApiError::Internal)?;
+        }
+        state
+            .publish_current_job_progress(job.id)
+            .await
+            .map_err(|_| ApiError::Internal)?;
         queue
-            .enqueue(&crate::queue::QueueMessage::new(job.id))
+            .enqueue(&crate::queue::QueueMessage::for_attempt(job.id, queued.attempt))
             .await
             .map_err(|_| ApiError::Internal)?;
     }
@@ -214,27 +239,71 @@ async fn process_video(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<VideoJob>, ApiError> {
+    let current = authoritative_job(&state, id).await?.ok_or(ApiError::NotFound)?;
     if let Some(queue) = &state.queue {
-        if state.job(id).is_none() {
-            return Err(ApiError::NotFound);
+        if matches!(current.status, JobStatus::Processing | JobStatus::Completed) {
+            return Ok(Json(current));
         }
-        if matches!(
-            state.job(id).map(|job| job.status),
-            Some(crate::domain::JobStatus::Processing | crate::domain::JobStatus::Completed)
-        ) {
-            return state.job(id).map(Json).ok_or(ApiError::NotFound);
+
+        let retrying = matches!(current.status, JobStatus::Failed | JobStatus::Cancelled);
+        let accepted = if retrying {
+            if let Some(database) = &state.database {
+                let restarted = database
+                    .restart_job(id)
+                    .await
+                    .map_err(|_| ApiError::Internal)?
+                    .ok_or(ApiError::NotFound)?;
+                state.reconcile_job(restarted)
+            } else {
+                state.restart_job(id).ok_or(ApiError::NotFound)?
+            }
+        } else {
+            state
+                .update_job_progress(
+                    id,
+                    JobStatus::Pending,
+                    current.progress,
+                    Some(JobStage::Preparing),
+                    Some("等待处理".into()),
+                )
+                .unwrap_or(current)
+        };
+        if let Some(database) = &state.database {
+            database
+                .save_job(&accepted)
+                .await
+                .map_err(|_| ApiError::Internal)?;
         }
-        state.update_job(id, crate::domain::JobStatus::Processing, 1);
-        queue
-            .enqueue(&crate::queue::QueueMessage::new(id))
+        state
+            .publish_current_job_progress(id)
             .await
             .map_err(|_| ApiError::Internal)?;
+        queue
+            .enqueue(&crate::queue::QueueMessage::for_attempt(id, accepted.attempt))
+            .await
+            .map_err(|_| ApiError::Internal)?;
+        return Ok(Json(accepted));
+    }
+    if matches!(current.status, JobStatus::Processing | JobStatus::Completed) {
+        return Ok(Json(current));
+    }
+    if matches!(current.status, JobStatus::Failed | JobStatus::Cancelled) {
+        let restarted = if let Some(database) = &state.database {
+            let restarted = database
+                .restart_job(id)
+                .await
+                .map_err(|_| ApiError::Internal)?
+                .ok_or(ApiError::NotFound)?;
+            state.reconcile_job(restarted)
+        } else {
+            state.restart_job(id).ok_or(ApiError::NotFound)?
+        };
         if let Some(database) = &state.database {
-            if let Some(job) = state.job(id) {
-                let _ = database.save_job(&job).await;
-            }
+            database
+                .save_job(&restarted)
+                .await
+                .map_err(|_| ApiError::Internal)?;
         }
-        return state.job(id).map(Json).ok_or(ApiError::NotFound);
     }
     if !crate::worker::process_job(state.clone(), id).await {
         return state.job(id).map(Json).ok_or(ApiError::NotFound);
@@ -247,50 +316,169 @@ async fn process_video(
     state.job(id).map(Json).ok_or(ApiError::NotFound)
 }
 
+async fn authoritative_job(
+    state: &AppState,
+    id: Uuid,
+) -> Result<Option<VideoJob>, ApiError> {
+    if let Some(database) = &state.database {
+        match database.get_job(id).await {
+            Ok(Some(job)) => return Ok(Some(state.reconcile_job(job))),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("failed to load job {id} from MySQL: {error}");
+                return Err(ApiError::Internal);
+            }
+        }
+    }
+    Ok(state.job(id))
+}
+
 async fn get_job(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<VideoJob>, ApiError> {
-    if let Some(database) = &state.database {
-        match database.get_job(id).await {
-            Ok(Some(job)) => {
-                state
-                    .jobs
-                    .write()
-                    .expect("jobs lock poisoned")
-                    .insert(job.id, job.clone());
-                return Ok(Json(job));
-            }
-            Ok(None) => {}
-            Err(error) => eprintln!("failed to load job {id} from MySQL: {error}"),
-        }
-    }
-    if let Some(job) = state.job(id) {
-        return Ok(Json(job));
-    }
-    Err(ApiError::NotFound)
+    authoritative_job(&state, id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::NotFound)
 }
 
 async fn stream_job_progress(
     State(state): State<AppState>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
-    let stream = BroadcastStream::new(state.subscribe_job_progress()).filter_map(|result| {
-        match result {
-            Ok(event) => Some(Ok(
-                SseEvent::default()
-                    .event("job-progress")
-                    .json_data(event)
-                    .expect("job progress event should serialize"),
-            )),
-            Err(_) => None,
-        }
-    });
+    headers: HeaderMap,
+) -> Response {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(32);
+    if let Some(progress_store) = state.progress_store.clone() {
+        let last_event_id = headers
+            .get("last-event-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        tokio::spawn(stream_redis_progress(
+            state,
+            progress_store,
+            last_event_id,
+            sender,
+        ));
+    } else {
+        let receiver = state.subscribe_job_progress();
+        tokio::spawn(stream_local_progress(state, receiver, sender));
+    }
 
-    Sse::new(stream).keep_alive(
+    Sse::new(ReceiverStream::new(receiver)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
-    )
+    ).into_response()
+}
+
+fn progress_sse(event: JobProgressEvent, stream_id: Option<String>) -> SseEvent {
+    let event = SseEvent::default()
+        .event("job-progress")
+        .json_data(event)
+        .expect("job progress event should serialize");
+    match stream_id {
+        Some(stream_id) => event.id(stream_id),
+        None => event,
+    }
+}
+
+fn snapshot_sse(reason: &'static str, jobs: Vec<JobProgressEvent>) -> SseEvent {
+    SseEvent::default()
+        .event("job-snapshot")
+        .json_data(JobProgressSnapshot { reason, jobs })
+        .expect("job progress snapshot should serialize")
+}
+
+async fn stream_local_progress(
+    state: AppState,
+    mut receiver: tokio::sync::broadcast::Receiver<JobProgressEvent>,
+    sender: tokio::sync::mpsc::Sender<Result<SseEvent, Infallible>>,
+) {
+    if sender
+        .send(Ok(snapshot_sse("connected", state.job_progress_snapshot())))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    loop {
+        match receiver.recv().await {
+            Ok(event) => {
+                if sender.send(Ok(progress_sse(event, None))).await.is_err() {
+                    return;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                if sender
+                    .send(Ok(snapshot_sse("lagged", state.job_progress_snapshot())))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
+async fn stream_redis_progress(
+    state: AppState,
+    progress_store: crate::progress::RedisProgressStore,
+    last_event_id: Option<String>,
+    sender: tokio::sync::mpsc::Sender<Result<SseEvent, Infallible>>,
+) {
+    let mut cursor = match last_event_id {
+        Some(cursor) => cursor,
+        None => progress_store
+            .latest_stream_id()
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("failed to read Redis progress cursor: {error}");
+                "0-0".into()
+            }),
+    };
+    let snapshot = progress_store.snapshots().await.unwrap_or_else(|error| {
+        eprintln!("failed to read Redis progress snapshot: {error}");
+        state.job_progress_snapshot()
+    });
+    if sender
+        .send(Ok(snapshot_sse("connected", snapshot)))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    loop {
+        match progress_store.read_after(&cursor, 1_000).await {
+            Ok(events) => {
+                for StoredJobProgress { stream_id, event } in events {
+                    cursor = stream_id.clone();
+                    if sender
+                        .send(Ok(progress_sse(event, Some(stream_id))))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("Redis progress stream read failed: {error}");
+                if let Ok(snapshot) = progress_store.snapshots().await {
+                    if sender
+                        .send(Ok(snapshot_sse("recovered", snapshot)))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
 
 async fn update_job(
@@ -328,12 +516,22 @@ async fn delete_job(
             eprintln!("failed to delete annotated playback for job {id}: {error}");
         }
         state.forget_job(id);
+        if let Some(progress_store) = &state.progress_store {
+            if let Err(error) = progress_store.remove_job(id).await {
+                eprintln!("failed to delete progress snapshot for job {id}: {error}");
+            }
+        }
         return Ok(StatusCode::NO_CONTENT);
     }
     match state.delete_job(id) {
         Ok(()) => {
             if let Err(error) = state.storage.delete_annotated_video(id).await {
                 eprintln!("failed to delete annotated playback for job {id}: {error}");
+            }
+            if let Some(progress_store) = &state.progress_store {
+                if let Err(error) = progress_store.remove_job(id).await {
+                    eprintln!("failed to delete progress snapshot for job {id}: {error}");
+                }
             }
             Ok(StatusCode::NO_CONTENT)
         }
@@ -344,7 +542,11 @@ async fn delete_job(
 async fn list_jobs(State(state): State<AppState>) -> Json<Vec<VideoJob>> {
     if let Some(database) = &state.database {
         if let Ok(jobs) = database.list_jobs().await {
-            return Json(jobs);
+            return Json(
+                jobs.into_iter()
+                    .map(|job| state.reconcile_job(job))
+                    .collect(),
+            );
         }
     }
     Json(state.jobs())

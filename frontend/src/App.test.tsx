@@ -323,7 +323,7 @@ test('starts polling after a reconnecting signal and stops once the stream recon
   expect(screen.getByText('实时进度连接已断开，正在轮询任务状态…')).toBeInTheDocument();
 
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-  expect(apiMock.listJobs).toHaveBeenCalledTimes(2);
+  expect(apiMock.listJobs).toHaveBeenCalledTimes(3);
   expect(screen.getByText('100%')).toBeInTheDocument();
   expect(screen.getAllByText('处理完成').length).toBeGreaterThan(0);
 
@@ -332,7 +332,7 @@ test('starts polling after a reconnecting signal and stops once the stream recon
   });
 
   await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-  expect(apiMock.listJobs).toHaveBeenCalledTimes(2);
+  expect(apiMock.listJobs).toHaveBeenCalledTimes(3);
 });
 
 test('releases the upload control while background processing continues', async () => {

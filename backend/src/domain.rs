@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+
+pub fn unix_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before unix epoch")
+        .as_millis() as u64
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -34,36 +41,50 @@ pub enum JobStage {
 pub struct JobProgressEvent {
     pub job_id: Uuid,
     pub status: JobStatus,
-    pub stage: JobStage,
+    pub stage: Option<JobStage>,
     pub progress: u8,
-    pub message: String,
+    pub message: Option<String>,
     pub updated_at: u64,
     pub estimated_remaining_ms: Option<u64>,
     pub sequence: u64,
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 impl JobProgressEvent {
     pub fn new(
         job_id: Uuid,
         status: JobStatus,
-        stage: JobStage,
+        stage: Option<JobStage>,
         progress: u8,
-        message: String,
+        message: Option<String>,
         sequence: u64,
+        attempt: u32,
     ) -> Self {
-        let updated_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_millis() as u64;
         Self {
             job_id,
             status,
             stage,
             progress,
             message,
-            updated_at,
+            updated_at: unix_time_millis(),
             estimated_remaining_ms: None,
             sequence,
+            attempt,
+        }
+    }
+
+    pub fn from_job(job: &VideoJob, sequence: u64) -> Self {
+        Self {
+            job_id: job.id,
+            status: job.status.clone(),
+            stage: job.stage.clone(),
+            progress: job.progress,
+            message: job.status_message.clone(),
+            updated_at: job.updated_at.unwrap_or_else(unix_time_millis),
+            estimated_remaining_ms: None,
+            sequence,
+            attempt: job.attempt,
         }
     }
 }
@@ -93,10 +114,21 @@ pub struct VideoJob {
     pub annotated_video_status: Option<String>,
     #[serde(default)]
     pub annotated_video_error: Option<String>,
+    #[serde(default)]
+    pub stage: Option<JobStage>,
+    #[serde(default)]
+    pub status_message: Option<String>,
+    #[serde(default)]
+    pub attempt: u32,
+    #[serde(default)]
+    pub created_at: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<u64>,
 }
 
 impl VideoJob {
     pub fn new(filename: String, duration_ms: u64) -> Self {
+        let now = unix_time_millis();
         Self {
             id: Uuid::new_v4(),
             filename,
@@ -107,6 +139,11 @@ impl VideoJob {
             annotated_video_url: None,
             annotated_video_status: None,
             annotated_video_error: None,
+            stage: None,
+            status_message: None,
+            attempt: 0,
+            created_at: Some(now),
+            updated_at: Some(now),
         }
     }
 }

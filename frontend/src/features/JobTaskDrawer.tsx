@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef } from 'react';
 import { JobProgressBar } from './JobProgressBar';
-import { jobActivityLabel, jobStageLabel, jobStatusLabel } from './jobProgress';
+import { jobActivityLabel, jobStageLabel, jobStatusLabel, progressPercent } from './jobProgress';
 import type { JobProgressEvent, JobStage, VideoJob } from '../types/events';
 
 type JobTaskDrawerProps = {
@@ -42,7 +42,7 @@ function progressValue(job: VideoJob, progressEvent?: JobProgressEvent | null) {
   }
 
   if (typeof progressEvent?.progress === 'number') {
-    return progressEvent.progress > 1 ? progressEvent.progress : progressEvent.progress * 100;
+    return progressPercent(progressEvent.progress);
   }
 
   return job.progress;
@@ -164,6 +164,22 @@ export function JobTaskDrawer({
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();
+        return;
+      }
+
+      if (event.key === 'Tab') {
+        const focusable = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"] button, [role="dialog"] input, [role="dialog"] select, [role="dialog"] textarea, [role="dialog"] [tabindex]:not([tabindex="-1"])'))
+          .filter((element) => !element.hasAttribute('disabled'));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
 

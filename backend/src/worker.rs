@@ -10,8 +10,42 @@ use std::path::PathBuf;
 use std::time::Instant;
 use uuid::Uuid;
 
-fn publish_stage(state: &AppState, job_id: Uuid, stage: JobStage, progress: u8, message: &str) {
-    state.publish_job_progress(job_id, stage, progress, message.to_string());
+#[derive(Debug)]
+struct ProcessingFailure {
+    stage: JobStage,
+    message: String,
+}
+
+impl ProcessingFailure {
+    fn new(stage: JobStage, user_message: &str, cause: impl std::fmt::Display) -> Self {
+        Self {
+            stage,
+            message: format!("{user_message}：{cause}"),
+        }
+    }
+}
+
+async fn publish_stage(
+    state: &AppState,
+    job_id: Uuid,
+    stage: JobStage,
+    progress: u8,
+    message: &str,
+) -> bool {
+    let Some(_) = state.update_job_progress(
+        job_id,
+        JobStatus::Processing,
+        progress,
+        Some(stage),
+        Some(message.to_string()),
+    ) else {
+        return false;
+    };
+    persist_job_state(state, job_id, "progress").await;
+    if let Err(error) = state.publish_current_job_progress(job_id).await {
+        eprintln!("failed to publish progress for job {job_id}: {error}");
+    }
+    true
 }
 
 pub fn build_performance_summary(
@@ -57,12 +91,16 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         eprintln!("worker job {job_id} not found in memory or database");
         return false;
     };
-    publish_stage(&state, job_id, JobStage::Preparing, 1, "正在准备视频");
+    if job.status.is_terminal() {
+        eprintln!("worker ignored terminal job {job_id} attempt {}", job.attempt);
+        return false;
+    }
+    publish_stage(&state, job_id, JobStage::Preparing, 1, "正在准备视频").await;
     if let Err(error) = refresh_rules(&state).await {
         eprintln!("worker failed to refresh event rules before job {job_id}: {error}");
     }
     println!("worker processing job {job_id}: {}", job.filename);
-    publish_stage(&state, job_id, JobStage::Reading, 1, "正在读取视频");
+    publish_stage(&state, job_id, JobStage::Reading, 1, "正在读取视频").await;
     let probe_started = Instant::now();
     let source_metadata = match job.source_uri.as_deref() {
         Some(source_uri) => video::probe(std::path::Path::new(source_uri)).await,
@@ -73,18 +111,27 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         Some(source_uri) => match process_video(&state, job_id, source_uri, &mut performance).await {
             Ok(result) => result,
             Err(error) => {
-                eprintln!("video job {job_id} failed: {error}");
+                eprintln!("video job {job_id} failed: {}", error.message);
                 performance.errors += 1;
-                state.update_job(job_id, JobStatus::Failed, 100);
-                publish_stage(&state, job_id, JobStage::Finalizing, 100, "处理失败");
+                let failed_progress = state.job(job_id).map(|job| job.progress).unwrap_or(0);
+                state.update_job_progress(
+                    job_id,
+                    JobStatus::Failed,
+                    failed_progress,
+                    Some(error.stage),
+                    Some(error.message),
+                );
                 persist_job_state(&state, job_id, "failed").await;
+                if let Err(publish_error) = state.publish_current_job_progress(job_id).await {
+                    eprintln!("failed to publish terminal progress for job {job_id}: {publish_error}");
+                }
                 emit_performance_summary(&mut performance, started_at);
                 return false;
             }
         },
         None => (None, Vec::new(), "no-video-source".to_string()),
     };
-    publish_stage(&state, job_id, JobStage::AnalyzingEvents, 75, "正在分析事件");
+    publish_stage(&state, job_id, JobStage::AnalyzingEvents, 75, "正在分析事件").await;
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         current.annotated_video_status = Some("pending".into());
         current.annotated_video_error = None;
@@ -150,7 +197,8 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         JobStage::GeneratingPlayback,
         75,
         "正在生成检测回放",
-    );
+    )
+    .await;
     let encode_started = Instant::now();
     let playback_result = state
         .storage
@@ -189,14 +237,24 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
     if let Some(directory) = frame_directory {
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
-    state.update_job(job_id, JobStatus::Completed, 100);
-    publish_stage(&state, job_id, JobStage::Finalizing, 100, "正在整理分析结果");
-    if let Some(database) = &state.database {
-        if let Some(job) = state.job(job_id) {
-            if let Err(error) = database.save_job(&job).await {
-                eprintln!("failed to save completed job {job_id}: {error}");
-            }
-        }
+    publish_stage(
+        &state,
+        job_id,
+        JobStage::Finalizing,
+        95,
+        "正在整理分析结果",
+    )
+    .await;
+    state.update_job_progress(
+        job_id,
+        JobStatus::Completed,
+        100,
+        Some(JobStage::Finalizing),
+        Some("处理完成".into()),
+    );
+    persist_job_state(&state, job_id, "completed").await;
+    if let Err(error) = state.publish_current_job_progress(job_id).await {
+        eprintln!("failed to publish completed progress for job {job_id}: {error}");
     }
     emit_performance_summary(&mut performance, started_at);
     true
@@ -319,7 +377,14 @@ async fn process_video(
     job_id: Uuid,
     source_uri: &str,
     performance: &mut PerformanceSummary,
-) -> Result<(Option<std::path::PathBuf>, Vec<crate::rules::FrameDetection>, String), String> {
+) -> Result<
+    (
+        Option<std::path::PathBuf>,
+        Vec<crate::rules::FrameDetection>,
+        String,
+    ),
+    ProcessingFailure,
+> {
     let interval_ms = video::detection_interval_ms();
     publish_stage(
         state,
@@ -327,13 +392,22 @@ async fn process_video(
         JobStage::ExtractingFrames,
         35,
         "正在抽取关键帧",
-    );
+    )
+    .await;
     let extract_started = Instant::now();
-    let (directory, frame_paths) =
-        video::extract_frames(std::path::Path::new(source_uri), interval_ms).await?;
+    let (directory, frame_paths) = video::extract_frames(
+        std::path::Path::new(source_uri),
+        interval_ms,
+    )
+    .await
+    .map_err(|error| {
+        ProcessingFailure::new(JobStage::ExtractingFrames, "视频帧提取失败", error)
+    })?;
     performance.add_stage_ms("frame_extract", extract_started.elapsed().as_millis());
     performance.frames = frame_paths.len();
-    let detector = YoloDetector::from_env().map_err(|error| error.to_string())?;
+    let detector = YoloDetector::from_env().map_err(|error| {
+        ProcessingFailure::new(JobStage::Detecting, "目标检测初始化失败", error)
+    })?;
     let mut frames = Vec::new();
     let mut model_version = None;
     let batch_size = yolo::batch_size();
@@ -351,25 +425,41 @@ async fn process_video(
         })
         .collect::<Vec<_>>();
     performance.batches = batches.len();
-    publish_stage(state, job_id, JobStage::Detecting, 35, "正在进行目标检测");
+    publish_stage(state, job_id, JobStage::Detecting, 35, "正在进行目标检测").await;
     let yolo_started = Instant::now();
-    let mut pending = tokio::task::JoinSet::new();
+    let mut pending: tokio::task::JoinSet<
+        Result<(usize, Vec<(PathBuf, yolo::YoloResponse)>), String>,
+    > = tokio::task::JoinSet::new();
     let mut completed = Vec::with_capacity(batches.len());
     for (batch_index, batch) in batches {
         while pending.len() >= concurrency {
             let result = pending
                 .join_next()
                 .await
-                .ok_or_else(|| "YOLO batch task ended unexpectedly".to_string())?
-                .map_err(|error| format!("YOLO batch task failed: {error}"))?;
-            completed.push(result?);
+                .ok_or_else(|| {
+                    ProcessingFailure::new(
+                        JobStage::Detecting,
+                        "目标检测失败",
+                        "批处理任务意外结束",
+                    )
+                })?
+                .map_err(|error| {
+                    ProcessingFailure::new(JobStage::Detecting, "目标检测任务失败", error)
+                })?;
+            completed.push(result.map_err(|error| {
+                ProcessingFailure::new(JobStage::Detecting, "目标检测失败", error)
+            })?);
         }
         let detector = detector.clone();
         pending.spawn(async move { Ok::<_, String>((batch_index, detector.detect_batch(&batch).await?)) });
     }
     while let Some(result) = pending.join_next().await {
-        let result = result.map_err(|error| format!("YOLO batch task failed: {error}"))?;
-        completed.push(result?);
+        let result = result.map_err(|error| {
+            ProcessingFailure::new(JobStage::Detecting, "目标检测任务失败", error)
+        })?;
+        completed.push(result.map_err(|error| {
+            ProcessingFailure::new(JobStage::Detecting, "目标检测失败", error)
+        })?);
     }
     completed.sort_by_key(|(batch_index, _)| *batch_index);
     for (_, batch_results) in completed {
@@ -377,9 +467,19 @@ async fn process_video(
             let filename = frame_path
                 .file_name()
                 .and_then(|value| value.to_str())
-                .ok_or_else(|| "invalid frame filename".to_string())?;
+                .ok_or_else(|| {
+                    ProcessingFailure::new(
+                        JobStage::Detecting,
+                        "目标检测结果无效",
+                        "无效的帧文件名",
+                    )
+                })?;
             if video::frame_timestamp_ms(filename).is_none() {
-                return Err(format!("invalid frame filename: {filename}"));
+                return Err(ProcessingFailure::new(
+                    JobStage::Detecting,
+                    "目标检测结果无效",
+                    format!("无效的帧文件名 {filename}"),
+                ));
             }
             println!(
                 "YOLO response: frame={}, timestamp_ms={}, detections={}, classes={:?}",
@@ -429,24 +529,36 @@ pub async fn run_loop(state: AppState, queue: crate::queue::TaskQueue) {
             Ok(Some(message)) => {
                 println!("worker received job {} (attempt {})", message.job_id, message.attempt);
                 if let Ok(job_id) = Uuid::parse_str(&message.job_id) {
-                    if state.job(job_id).is_none() {
-                        if let Some(database) = &state.database {
-                            match database.get_job(job_id).await {
-                                Ok(Some(job)) => {
-                                    state
-                                        .jobs
-                                        .write()
-                                        .expect("jobs lock poisoned")
-                                        .insert(job.id, job);
-                                }
-                                Ok(None) => {
-                                    eprintln!("worker job {job_id} was not found in MySQL");
-                                }
-                                Err(error) => {
-                                    eprintln!("worker failed to load job {job_id} from MySQL: {error}");
-                                }
+                    if let Some(database) = &state.database {
+                        match database.get_job(job_id).await {
+                            Ok(Some(job)) => {
+                                state.reconcile_job(job);
+                            }
+                            Ok(None) => {
+                                eprintln!("worker job {job_id} was not found in MySQL");
+                            }
+                            Err(error) => {
+                                eprintln!("worker failed to load job {job_id} from MySQL: {error}");
                             }
                         }
+                    }
+                    let Some(job) = state.job(job_id) else {
+                        eprintln!("worker job {job_id} is unavailable after hydration");
+                        continue;
+                    };
+                    if job.attempt != message.attempt {
+                        eprintln!(
+                            "worker ignored stale queue message for job {job_id}: message attempt {}, current attempt {}",
+                            message.attempt, job.attempt
+                        );
+                        continue;
+                    }
+                    if job.status.is_terminal() {
+                        eprintln!(
+                            "worker ignored terminal job {job_id} attempt {}",
+                            message.attempt
+                        );
+                        continue;
                     }
                     let succeeded = process_job(state.clone(), job_id).await;
                     println!("worker finished job {job_id}: {succeeded}");

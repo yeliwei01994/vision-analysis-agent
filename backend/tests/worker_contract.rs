@@ -275,3 +275,40 @@ async fn failed_video_processing_is_persisted_to_mysql() {
         .await;
     assert_eq!(state.job(job.id).unwrap().status, JobStatus::Failed);
 }
+
+#[tokio::test]
+async fn failed_processing_publishes_the_actual_stage_and_user_facing_reason() {
+    let state = AppState::default();
+    let mut subscriber = state.subscribe_job_progress();
+    let job = state.create_job("missing-stage.mp4".into(), 0);
+    let mut sourced = state.job(job.id).unwrap();
+    sourced.source_uri = Some("media/does-not-exist.mp4".into());
+    state.reconcile_job(sourced);
+
+    assert!(!worker::process_job(state.clone(), job.id).await);
+
+    let failure = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let event = subscriber.recv().await.unwrap();
+            if event.status == JobStatus::Failed {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        failure.stage,
+        Some(vision_event_api::domain::JobStage::ExtractingFrames)
+    );
+    assert_eq!(failure.progress, 35);
+    assert!(failure
+        .message
+        .as_deref()
+        .unwrap_or_default()
+        .contains("视频帧提取失败"));
+    let saved = state.job(job.id).unwrap();
+    assert_eq!(saved.stage, failure.stage);
+    assert_eq!(saved.status_message, failure.message);
+}

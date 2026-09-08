@@ -1,4 +1,7 @@
-use crate::{domain::{Event, EventReview, EventStatus, JobStatus, VideoJob}, rules::EventRule};
+use crate::{
+    domain::{Event, EventReview, EventStatus, JobStage, JobStatus, VideoJob},
+    rules::EventRule,
+};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool, Row};
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -40,33 +43,52 @@ impl Database {
     }
 
     pub async fn save_job(&self, job: &VideoJob) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO video_jobs (id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE status=VALUES(status), progress=VALUES(progress), source_uri=VALUES(source_uri), annotated_video_url=VALUES(annotated_video_url), annotated_video_status=VALUES(annotated_video_status), annotated_video_error=VALUES(annotated_video_error)")
-            .bind(job.id.to_string()).bind(&job.filename).bind(job.duration_ms as i64).bind(status_name(&job.status)).bind(job.progress as i32).bind(&job.source_uri).bind(&job.annotated_video_url).bind(&job.annotated_video_status).bind(&job.annotated_video_error).execute(&self.pool).await?;
+        sqlx::query(
+            "INSERT INTO video_jobs (id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error, progress_stage, status_message, attempt) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+             progress=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(progress), progress), \
+             source_uri=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(source_uri), source_uri), \
+             annotated_video_url=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(annotated_video_url), annotated_video_url), \
+             annotated_video_status=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(annotated_video_status), annotated_video_status), \
+             annotated_video_error=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(annotated_video_error), annotated_video_error), \
+             progress_stage=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(progress_stage), progress_stage), \
+             status_message=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(status_message), status_message), \
+             status=IF(VALUES(attempt) > attempt OR (VALUES(attempt) = attempt AND status NOT IN ('completed','failed','cancelled')), VALUES(status), status), \
+             attempt=GREATEST(attempt, VALUES(attempt))",
+        )
+            .bind(job.id.to_string())
+            .bind(&job.filename)
+            .bind(job.duration_ms as i64)
+            .bind(status_name(&job.status))
+            .bind(job.progress as i32)
+            .bind(&job.source_uri)
+            .bind(&job.annotated_video_url)
+            .bind(&job.annotated_video_status)
+            .bind(&job.annotated_video_error)
+            .bind(job.stage.as_ref().map(stage_name))
+            .bind(&job.status_message)
+            .bind(job.attempt)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     pub async fn get_job(&self, id: Uuid) -> Result<Option<VideoJob>, sqlx::Error> {
-        let row = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error FROM video_jobs WHERE id = ? AND deleted_at IS NULL")
+        let row = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error, progress_stage, status_message, attempt, CAST(UNIX_TIMESTAMP(created_at) * 1000 AS UNSIGNED) AS created_at_ms, CAST(UNIX_TIMESTAMP(updated_at) * 1000 AS UNSIGNED) AS updated_at_ms FROM video_jobs WHERE id = ? AND deleted_at IS NULL")
             .bind(id.to_string()).fetch_optional(&self.pool).await?;
-        Ok(row.and_then(|row| {
-            Some(VideoJob {
-                id: Uuid::parse_str(&row.try_get::<String, _>("id").ok()?).ok()?,
-                filename: row.try_get("filename").ok()?,
-                duration_ms: row.try_get::<u64, _>("duration_ms").ok()?,
-                status: match row.try_get::<String, _>("status").ok()?.as_str() {
-                    "processing" => JobStatus::Processing,
-                    "completed" => JobStatus::Completed,
-                    "failed" => JobStatus::Failed,
-                    "cancelled" => JobStatus::Cancelled,
-                    _ => JobStatus::Pending,
-                },
-                progress: row.try_get::<u8, _>("progress").ok()?,
-                source_uri: row.try_get("source_uri").ok()?,
-                annotated_video_url: row.try_get("annotated_video_url").ok()?,
-                annotated_video_status: row.try_get("annotated_video_status").ok()?,
-                annotated_video_error: row.try_get("annotated_video_error").ok()?,
-            })
-        }))
+        Ok(row.as_ref().and_then(job_from_row))
+    }
+
+    pub async fn restart_job(&self, id: Uuid) -> Result<Option<VideoJob>, sqlx::Error> {
+        sqlx::query(
+            "UPDATE video_jobs SET status = 'pending', progress = 0, progress_stage = 'preparing', status_message = '等待重新处理', attempt = attempt + 1, annotated_video_url = NULL, annotated_video_status = NULL, annotated_video_error = NULL \
+             WHERE id = ? AND deleted_at IS NULL AND status IN ('failed', 'cancelled')",
+        )
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        self.get_job(id).await
     }
 
     pub async fn update_job_filename(
@@ -111,27 +133,9 @@ impl Database {
     }
 
     pub async fn list_jobs(&self) -> Result<Vec<VideoJob>, sqlx::Error> {
-        let rows = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error FROM video_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200")
+        let rows = sqlx::query("SELECT id, filename, duration_ms, status, progress, source_uri, annotated_video_url, annotated_video_status, annotated_video_error, progress_stage, status_message, attempt, CAST(UNIX_TIMESTAMP(created_at) * 1000 AS UNSIGNED) AS created_at_ms, CAST(UNIX_TIMESTAMP(updated_at) * 1000 AS UNSIGNED) AS updated_at_ms FROM video_jobs WHERE deleted_at IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 200")
             .fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().filter_map(|row| {
-            Some(VideoJob {
-                id: Uuid::parse_str(&row.try_get::<String, _>("id").ok()?).ok()?,
-                filename: row.try_get("filename").ok()?,
-                duration_ms: row.try_get::<u64, _>("duration_ms").ok()?,
-                status: match row.try_get::<String, _>("status").ok()?.as_str() {
-                    "processing" => JobStatus::Processing,
-                    "completed" => JobStatus::Completed,
-                    "failed" => JobStatus::Failed,
-                    "cancelled" => JobStatus::Cancelled,
-                    _ => JobStatus::Pending,
-                },
-                progress: row.try_get::<u8, _>("progress").ok()?,
-                source_uri: row.try_get("source_uri").ok()?,
-                annotated_video_url: row.try_get("annotated_video_url").ok()?,
-                annotated_video_status: row.try_get("annotated_video_status").ok()?,
-                annotated_video_error: row.try_get("annotated_video_error").ok()?,
-            })
-        }).collect())
+        Ok(rows.iter().filter_map(job_from_row).collect())
     }
 
     pub async fn save_event(&self, event: &Event) -> Result<(), sqlx::Error> {
@@ -242,6 +246,61 @@ fn status_name(status: &JobStatus) -> &'static str {
         JobStatus::Cancelled => "cancelled",
     }
 }
+
+fn stage_name(stage: &JobStage) -> &'static str {
+    match stage {
+        JobStage::Preparing => "preparing",
+        JobStage::Reading => "reading",
+        JobStage::ExtractingFrames => "extracting_frames",
+        JobStage::Detecting => "detecting",
+        JobStage::AnalyzingEvents => "analyzing_events",
+        JobStage::GeneratingPlayback => "generating_playback",
+        JobStage::Finalizing => "finalizing",
+    }
+}
+
+fn stage_from_name(stage: &str) -> Option<JobStage> {
+    match stage {
+        "preparing" => Some(JobStage::Preparing),
+        "reading" => Some(JobStage::Reading),
+        "extracting_frames" => Some(JobStage::ExtractingFrames),
+        "detecting" => Some(JobStage::Detecting),
+        "analyzing_events" => Some(JobStage::AnalyzingEvents),
+        "generating_playback" => Some(JobStage::GeneratingPlayback),
+        "finalizing" => Some(JobStage::Finalizing),
+        _ => None,
+    }
+}
+
+fn job_from_row(row: &sqlx::mysql::MySqlRow) -> Option<VideoJob> {
+    Some(VideoJob {
+        id: Uuid::parse_str(&row.try_get::<String, _>("id").ok()?).ok()?,
+        filename: row.try_get("filename").ok()?,
+        duration_ms: row.try_get::<u64, _>("duration_ms").ok()?,
+        status: match row.try_get::<String, _>("status").ok()?.as_str() {
+            "processing" => JobStatus::Processing,
+            "completed" => JobStatus::Completed,
+            "failed" => JobStatus::Failed,
+            "cancelled" => JobStatus::Cancelled,
+            _ => JobStatus::Pending,
+        },
+        progress: row.try_get::<u8, _>("progress").ok()?,
+        source_uri: row.try_get("source_uri").ok()?,
+        annotated_video_url: row.try_get("annotated_video_url").ok()?,
+        annotated_video_status: row.try_get("annotated_video_status").ok()?,
+        annotated_video_error: row.try_get("annotated_video_error").ok()?,
+        stage: row
+            .try_get::<Option<String>, _>("progress_stage")
+            .ok()?
+            .as_deref()
+            .and_then(stage_from_name),
+        status_message: row.try_get("status_message").ok()?,
+        attempt: row.try_get("attempt").ok()?,
+        created_at: row.try_get("created_at_ms").ok()?,
+        updated_at: row.try_get("updated_at_ms").ok()?,
+    })
+}
+
 fn event_status_name(status: &EventStatus) -> &'static str {
     match status {
         EventStatus::Unreviewed => "unreviewed",
