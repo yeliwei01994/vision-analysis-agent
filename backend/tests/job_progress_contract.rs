@@ -328,3 +328,45 @@ async fn redis_progress_rejects_stale_terminal_overwrites_atomically_and_accepts
     assert!(retried.event.sequence > accepted.event.sequence);
     assert_eq!(store.snapshots().await.unwrap()[0].attempt, 2);
 }
+
+#[tokio::test]
+async fn redis_sse_recalibrates_when_last_event_cursor_was_trimmed() {
+    dotenvy::dotenv().ok();
+    let Ok(redis_url) = std::env::var("REDIS_URL") else {
+        eprintln!("REDIS_URL is required for Redis cursor trim test");
+        return;
+    };
+    let store = RedisProgressStore::new(
+        &redis_url,
+        format!("vision:test:trimmed-progress:{}", uuid::Uuid::new_v4()),
+    ).unwrap();
+    store.clear().await.unwrap();
+    let job_id = uuid::Uuid::new_v4();
+    let first = store.publish(vision_event_api::domain::JobProgressEvent::new(
+        job_id, JobStatus::Processing, Some(JobStage::Detecting), 10, Some("first".into()), 0, 1,
+    )).await.unwrap().unwrap();
+    store.publish(vision_event_api::domain::JobProgressEvent::new(
+        job_id, JobStatus::Processing, Some(JobStage::Detecting), 20, Some("second".into()), 0, 1,
+    )).await.unwrap();
+    store.trim_to(1).await.unwrap();
+    assert!(store.cursor_is_trimmed(&first.stream_id).await.unwrap());
+
+    let state = AppState::default().with_progress_store(Some(store.clone()));
+    let response = api::router(state).oneshot(
+        Request::get("/api/v1/jobs/progress/stream")
+            .header("last-event-id", first.stream_id)
+            .body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    let mut body = response.into_body();
+    let _connected = body.frame().await.unwrap().unwrap();
+    let recovered = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
+            let payload = std::str::from_utf8(&frame).unwrap().to_string();
+            if payload.contains("\"reason\":\"trimmed\"") {
+                return payload;
+            }
+        }
+    }).await.expect("trimmed cursor must force snapshot calibration");
+    assert!(recovered.contains("\"progress\":20"));
+}

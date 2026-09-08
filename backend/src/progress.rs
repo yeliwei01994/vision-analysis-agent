@@ -137,6 +137,18 @@ impl RedisProgressStore {
         Ok(events)
     }
 
+    pub async fn trim_to(&self, max_len: usize) -> redis::RedisResult<i64> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        redis::cmd("XTRIM").arg(&self.stream).arg("MAXLEN").arg("=").arg(max_len).query_async(&mut connection).await
+    }
+
+    pub async fn cursor_is_trimmed(&self, cursor: &str) -> redis::RedisResult<bool> {
+        if cursor == "0-0" { return Ok(false); }
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let reply: StreamRangeReply = redis::cmd("XRANGE").arg(&self.stream).arg("-").arg("+").arg("COUNT").arg(1).query_async(&mut connection).await?;
+        Ok(reply.ids.first().is_some_and(|entry| stream_id_less(cursor, &entry.id)))
+    }
+
     pub async fn remove_job(&self, job_id: uuid::Uuid) -> redis::RedisResult<()> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         redis::pipe()
@@ -162,6 +174,11 @@ impl RedisProgressStore {
             .query_async::<()>(&mut connection)
             .await
     }
+}
+
+fn stream_id_less(left: &str, right: &str) -> bool {
+    let parse = |value: &str| value.split_once('-').and_then(|(ms, seq)| Some((ms.parse::<u64>().ok()?, seq.parse::<u64>().ok()?)));
+    match (parse(left), parse(right)) { (Some(left), Some(right)) => left < right, _ => false }
 }
 
 fn serialize_event(event: &JobProgressEvent) -> redis::RedisResult<String> {

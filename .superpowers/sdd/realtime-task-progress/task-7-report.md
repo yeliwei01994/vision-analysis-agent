@@ -42,3 +42,11 @@ Current commit status is intentionally a partial final-review batch: the remaini
 - Redis publication now uses one Lua transaction to compare attempts/terminal state, allocate the per-job sequence, append the stream event, and update the snapshot. A stale same-attempt terminal overwrite does not increment the sequence or publish.
 
 Follow-up verification: frontend snapshot/attempt focused suite 19/19 passed; frontend production build passed; Redis-backed backend progress/atomicity suite 8/8 passed.
+
+## Final review blocker follow-up
+
+- Worker terminal completed/failed publication now follows a successful save_job result; terminal persistence and progress-publication errors propagate through process_job and the API/run-loop boundary. Nonterminal progress remains best-effort so a transient progress write does not fabricate a terminal event.
+- The reconnect polling fixture now supplies every real immediate-calibration and interval response. The full frontend suite passed 50/50 without weakening the interval assertions.
+- Redis SSE checks whether Last-Event-ID has fallen behind the trimmed stream head. It publishes a trimmed full snapshot and resets the cursor before resuming stream reads.
+
+Verification for this follow-up: frontend full suite 50/50 passed; frontend build passed; cargo check --all-targets passed; Redis progress/SSE focused suite 9/9 passed; worker terminal-save focused test 1/1 passed; git diff --check passed.

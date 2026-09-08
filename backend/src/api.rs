@@ -305,8 +305,13 @@ async fn process_video(
                 .map_err(|_| ApiError::Internal)?;
         }
     }
-    if !crate::worker::process_job(state.clone(), id).await {
-        return state.job(id).map(Json).ok_or(ApiError::NotFound);
+    match crate::worker::process_job(state.clone(), id).await {
+        Ok(true) => {}
+        Ok(false) => return state.job(id).map(Json).ok_or(ApiError::NotFound),
+        Err(error) => {
+            eprintln!("worker failed to persist job {id}: {error}");
+            return Err(ApiError::Internal);
+        }
     }
     if let Some(database) = &state.database {
         if let Some(job) = state.job(id) {
@@ -451,6 +456,19 @@ async fn stream_redis_progress(
     }
 
     loop {
+        match progress_store.cursor_is_trimmed(&cursor).await {
+            Ok(true) => {
+                let snapshot = progress_store.snapshots().await.unwrap_or_else(|error| {
+                    eprintln!("failed to read Redis progress snapshot after trim: {error}");
+                    state.job_progress_snapshot()
+                });
+                if sender.send(Ok(snapshot_sse("trimmed", snapshot))).await.is_err() { return; }
+                cursor = progress_store.latest_stream_id().await.unwrap_or_else(|_| "0-0".into());
+                continue;
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("failed to inspect Redis progress cursor: {error}"),
+        }
         match progress_store.read_after(&cursor, 1_000).await {
             Ok(events) => {
                 for StoredJobProgress { stream_id, event } in events {

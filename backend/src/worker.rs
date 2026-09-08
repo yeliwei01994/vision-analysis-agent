@@ -31,7 +31,7 @@ async fn publish_stage(
     stage: JobStage,
     progress: u8,
     message: &str,
-) -> bool {
+) -> Result<bool, String> {
     let Some(_) = state.update_job_progress(
         job_id,
         JobStatus::Processing,
@@ -39,13 +39,15 @@ async fn publish_stage(
         Some(stage),
         Some(message.to_string()),
     ) else {
-        return false;
+        return Ok(false);
     };
-    persist_job_state(state, job_id, "progress").await;
+    if let Err(error) = persist_job_state(state, job_id, "progress").await {
+        eprintln!("failed to persist progress state for job {job_id}: {error}");
+    }
     if let Err(error) = state.publish_current_job_progress(job_id).await {
         eprintln!("failed to publish progress for job {job_id}: {error}");
     }
-    true
+    Ok(true)
 }
 
 pub fn build_performance_summary(
@@ -82,25 +84,25 @@ pub async fn refresh_rules(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
+pub async fn process_job(state: AppState, job_id: Uuid) -> Result<bool, String> {
     let started_at = Instant::now();
     let mut performance = PerformanceSummary::new(job_id);
     performance.batch_size = yolo::batch_size();
     performance.concurrency = yolo::concurrency();
     let Some(job) = state.job(job_id) else {
         eprintln!("worker job {job_id} not found in memory or database");
-        return false;
+        return Ok(false);
     };
     if job.status.is_terminal() {
         eprintln!("worker ignored terminal job {job_id} attempt {}", job.attempt);
-        return false;
+        return Ok(false);
     }
-    publish_stage(&state, job_id, JobStage::Preparing, 1, "正在准备视频").await;
+    publish_stage(&state, job_id, JobStage::Preparing, 1, "正在准备视频").await?;
     if let Err(error) = refresh_rules(&state).await {
         eprintln!("worker failed to refresh event rules before job {job_id}: {error}");
     }
     println!("worker processing job {job_id}: {}", job.filename);
-    publish_stage(&state, job_id, JobStage::Reading, 1, "正在读取视频").await;
+    publish_stage(&state, job_id, JobStage::Reading, 1, "正在读取视频").await?;
     let probe_started = Instant::now();
     let source_metadata = match job.source_uri.as_deref() {
         Some(source_uri) => video::probe(std::path::Path::new(source_uri)).await,
@@ -121,23 +123,21 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
                     Some(error.stage),
                     Some(error.message),
                 );
-                persist_job_state(&state, job_id, "failed").await;
-                if let Err(publish_error) = state.publish_current_job_progress(job_id).await {
-                    eprintln!("failed to publish terminal progress for job {job_id}: {publish_error}");
-                }
+                persist_job_state(&state, job_id, "failed").await?;
+                state.publish_current_job_progress(job_id).await.map_err(|error| error.to_string())?;
                 emit_performance_summary(&mut performance, started_at);
-                return false;
+                return Ok(false);
             }
         },
         None => (None, Vec::new(), "no-video-source".to_string()),
     };
-    publish_stage(&state, job_id, JobStage::AnalyzingEvents, 75, "正在分析事件").await;
+    publish_stage(&state, job_id, JobStage::AnalyzingEvents, 75, "正在分析事件").await?;
     if let Some(current) = state.jobs.write().expect("jobs lock poisoned").get_mut(&job_id) {
         current.annotated_video_status = Some("pending".into());
         current.annotated_video_error = None;
         current.annotated_video_url = None;
     }
-    persist_job_state(&state, job_id, "playback pending").await;
+    persist_job_state(&state, job_id, "playback pending").await?;
     let rules_started = Instant::now();
     let rules = state.event_rules();
     for rule in rules.into_iter().filter(|rule| rule.enabled) {
@@ -198,7 +198,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         75,
         "正在生成检测回放",
     )
-    .await;
+    .await?;
     let encode_started = Instant::now();
     let playback_result = state
         .storage
@@ -233,7 +233,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
             }
         }
     }
-    persist_job_state(&state, job_id, "playback result").await;
+    persist_job_state(&state, job_id, "playback result").await?;
     if let Some(directory) = frame_directory {
         let _ = tokio::fs::remove_dir_all(directory).await;
     }
@@ -244,7 +244,7 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         95,
         "正在整理分析结果",
     )
-    .await;
+    .await?;
     state.update_job_progress(
         job_id,
         JobStatus::Completed,
@@ -252,12 +252,10 @@ pub async fn process_job(state: AppState, job_id: Uuid) -> bool {
         Some(JobStage::Finalizing),
         Some("处理完成".into()),
     );
-    persist_job_state(&state, job_id, "completed").await;
-    if let Err(error) = state.publish_current_job_progress(job_id).await {
-        eprintln!("failed to publish completed progress for job {job_id}: {error}");
-    }
+    persist_job_state(&state, job_id, "completed").await?;
+    state.publish_current_job_progress(job_id).await.map_err(|error| error.to_string())?;
     emit_performance_summary(&mut performance, started_at);
-    true
+    Ok(true)
 }
 
 pub fn merge_rule_events(mut candidates: Vec<crate::rules::RuleEvent>, gap_ms: u64) -> Vec<crate::rules::RuleEvent> {
@@ -358,18 +356,14 @@ pub fn select_evidence_frames(
     kept.into_iter().take(max_frames).map(|index| sources[index].clone()).collect()
 }
 
-async fn persist_job_state(state: &AppState, job_id: Uuid, reason: &str) {
+async fn persist_job_state(state: &AppState, job_id: Uuid, reason: &str) -> Result<(), String> {
     let Some(database) = &state.database else {
-        eprintln!("job {job_id} marked {reason}, but database is unavailable");
-        return;
+        return Ok(());
     };
     let Some(job) = state.job(job_id) else {
-        eprintln!("job {job_id} marked {reason}, but job state is unavailable");
-        return;
+        return Err(format!("job {job_id} marked {reason}, but job state is unavailable"));
     };
-    if let Err(error) = database.save_job(&job).await {
-        eprintln!("failed to persist {reason} state for job {job_id}: {error}");
-    }
+    database.save_job(&job).await.map_err(|error| format!("failed to persist {reason} state for job {job_id}: {error}"))
 }
 
 async fn process_video(
@@ -386,7 +380,7 @@ async fn process_video(
     ProcessingFailure,
 > {
     let interval_ms = video::detection_interval_ms();
-    publish_stage(
+    let _ = publish_stage(
         state,
         job_id,
         JobStage::ExtractingFrames,
@@ -425,7 +419,7 @@ async fn process_video(
         })
         .collect::<Vec<_>>();
     performance.batches = batches.len();
-    publish_stage(state, job_id, JobStage::Detecting, 35, "正在进行目标检测").await;
+    let _ = publish_stage(state, job_id, JobStage::Detecting, 35, "正在进行目标检测").await;
     let yolo_started = Instant::now();
     let mut pending: tokio::task::JoinSet<
         Result<(usize, Vec<(PathBuf, yolo::YoloResponse)>), String>,
@@ -560,8 +554,10 @@ pub async fn run_loop(state: AppState, queue: crate::queue::TaskQueue) {
                         );
                         continue;
                     }
-                    let succeeded = process_job(state.clone(), job_id).await;
-                    println!("worker finished job {job_id}: {succeeded}");
+                    match process_job(state.clone(), job_id).await {
+                        Ok(succeeded) => println!("worker finished job {job_id}: {succeeded}"),
+                        Err(error) => eprintln!("worker failed job {job_id}: {error}"),
+                    }
                 } else {
                     eprintln!("worker received invalid job id: {}", message.job_id);
                 }

@@ -292,6 +292,7 @@ test('starts polling after a reconnecting signal and stops once the stream recon
   apiMock.listEvents.mockResolvedValue([]);
   apiMock.listJobs
     .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 0, status: 'processing', progress: 20, source_uri: null }])
+    .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 0, status: 'completed', progress: 100, source_uri: null }])
     .mockResolvedValueOnce([{ id: 'job-1', filename: 'clip.mp4', duration_ms: 0, status: 'completed', progress: 100, source_uri: null }]);
 
   render(<App />);

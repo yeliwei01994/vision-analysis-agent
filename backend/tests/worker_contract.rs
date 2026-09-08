@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use sqlx::Row;
+use sqlx::{mysql::MySqlPoolOptions, Row};
 use vision_event_api::{
     application::AppState,
     domain::{Detection, JobStatus},
@@ -259,7 +259,7 @@ async fn failed_video_processing_is_persisted_to_mysql() {
         database.save_job(&job_with_source).await.unwrap();
     }
 
-    assert!(!worker::process_job(state.clone(), job.id).await);
+    assert!(!worker::process_job(state.clone(), job.id).await.unwrap());
 
     let row = sqlx::query("SELECT status, progress FROM video_jobs WHERE id = ?")
         .bind(job.id.to_string())
@@ -285,7 +285,7 @@ async fn failed_processing_publishes_the_actual_stage_and_user_facing_reason() {
     sourced.source_uri = Some("media/does-not-exist.mp4".into());
     state.reconcile_job(sourced);
 
-    assert!(!worker::process_job(state.clone(), job.id).await);
+    assert!(!worker::process_job(state.clone(), job.id).await.unwrap());
 
     let failure = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -311,4 +311,31 @@ async fn failed_processing_publishes_the_actual_stage_and_user_facing_reason() {
     let saved = state.job(job.id).unwrap();
     assert_eq!(saved.stage, failure.stage);
     assert_eq!(saved.status_message, failure.message);
+}
+
+#[tokio::test]
+async fn terminal_failure_is_not_published_when_save_job_fails() {
+    let pool = MySqlPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(50))
+        .connect_lazy("mysql://root:root@127.0.0.1:1/vision")
+        .unwrap();
+    let state = AppState::default().with_integrations(Some(Database { pool }), None);
+    let mut subscriber = state.subscribe_job_progress();
+    let job = state.create_job("persistence-failure.mp4".into(), 0);
+    let mut sourced = state.job(job.id).unwrap();
+    sourced.source_uri = Some("media/does-not-exist.mp4".into());
+    state.reconcile_job(sourced);
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), worker::process_job(state.clone(), job.id))
+        .await
+        .expect("worker persistence failure should return promptly");
+    assert!(result.is_err());
+    assert_eq!(state.job(job.id).unwrap().status, JobStatus::Failed);
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(50), async {
+        loop {
+            if subscriber.recv().await.unwrap().status == JobStatus::Failed {
+                return;
+            }
+        }
+    }).await.is_err(), "failed terminal event must wait for a successful save");
 }
