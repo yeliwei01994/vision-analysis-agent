@@ -1,4 +1,4 @@
-import type { JobProgressEvent, JobStage, VideoJob } from '../types/events';
+import type { JobProgressEvent, JobProgressSnapshot, JobStage, VideoJob } from '../types/events';
 
 type TrackableJobStatus = JobProgressEvent['status'];
 
@@ -84,6 +84,14 @@ export function mergeJobProgress(previous: JobProgressEvent, next: JobProgressEv
     return previous;
   }
 
+  if ((next.attempt ?? 0) < (previous.attempt ?? 0)) {
+    return previous;
+  }
+
+  if ((next.attempt ?? 0) > (previous.attempt ?? 0)) {
+    return next;
+  }
+
   if (next.sequence < previous.sequence) {
     return previous;
   }
@@ -138,6 +146,7 @@ export function buildRetryProgress(jobId: string, previous?: JobProgressEvent): 
     progress: 0,
     sequence: nextSyntheticSequence(previous),
     estimated_remaining_ms: null,
+    attempt: (previous?.attempt ?? 0) + 1,
   };
 }
 
@@ -154,7 +163,29 @@ export function buildJobProgressFromJob(job: VideoJob, previous?: JobProgressEve
     stage: job.status === 'processing' ? previous?.stage : undefined,
     message: job.status === 'processing' ? previous?.message : undefined,
     estimated_remaining_ms: null,
+    attempt: job.attempt ?? 0,
   };
+}
+
+export function mergeJobProgressSnapshot(
+  previousJobsById: Record<string, VideoJob>,
+  previousProgressById: Record<string, JobProgressEvent>,
+  snapshot: JobProgressSnapshot,
+): MergedJobsSnapshot {
+  const jobsById = { ...previousJobsById };
+  const progressById = { ...previousProgressById };
+
+  for (const incoming of snapshot.jobs) {
+    const current = progressById[incoming.job_id];
+    const merged = current ? mergeJobProgress(current, incoming) : incoming;
+    progressById[incoming.job_id] = merged;
+    const job = jobsById[incoming.job_id];
+    if (job) {
+      jobsById[incoming.job_id] = applyJobProgressToJob(job, merged);
+    }
+  }
+
+  return { jobsById, progressById };
 }
 
 function reconcileSnapshotProgress(previous: JobProgressEvent | undefined, snapshotJob: VideoJob): JobProgressEvent | undefined {

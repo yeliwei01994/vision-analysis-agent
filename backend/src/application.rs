@@ -253,7 +253,7 @@ impl AppState {
         ) else {
             return Ok(None);
         };
-        self.publish_job_snapshot(job).await.map(Some)
+        self.publish_job_snapshot(job).await
     }
 
     pub async fn publish_current_job_progress(
@@ -263,18 +263,20 @@ impl AppState {
         let Some(job) = self.job(job_id) else {
             return Ok(None);
         };
-        self.publish_job_snapshot(job).await.map(Some)
+        self.publish_job_snapshot(job).await
     }
 
     async fn publish_job_snapshot(
         &self,
         job: VideoJob,
-    ) -> redis::RedisResult<JobProgressEvent> {
+    ) -> redis::RedisResult<Option<JobProgressEvent>> {
         let event = if let Some(progress_store) = &self.progress_store {
-            progress_store
+            let Some(stored) = progress_store
                 .publish(JobProgressEvent::from_job(&job, 0))
-                .await?
-                .event
+                .await? else {
+                return Ok(None);
+            };
+            stored.event
         } else {
             let sequence = {
             let mut sequences = self
@@ -296,13 +298,13 @@ impl AppState {
             .expect("job progress snapshots lock poisoned")
             .insert(job.id, event.clone());
         let _ = self.job_progress_events.send(event);
-        Ok(self
+        Ok(Some(self
             .job_progress_snapshots
             .read()
             .expect("job progress snapshots lock poisoned")
             .get(&job.id)
             .cloned()
-            .expect("published job progress snapshot should exist"))
+            .expect("published job progress snapshot should exist")))
     }
 
     pub fn subscribe_job_progress(&self) -> broadcast::Receiver<JobProgressEvent> {

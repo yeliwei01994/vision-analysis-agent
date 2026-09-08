@@ -276,3 +276,55 @@ async fn redis_progress_from_a_separate_worker_state_reaches_the_api_sse_route()
     assert!(payload.contains("\"progress\":35"));
     progress_store.clear().await.unwrap();
 }
+
+#[tokio::test]
+async fn redis_progress_rejects_stale_terminal_overwrites_atomically_and_accepts_retry_attempt() {
+    dotenvy::dotenv().ok();
+    let Ok(redis_url) = std::env::var("REDIS_URL") else {
+        eprintln!("REDIS_URL is required for Redis progress atomicity test");
+        return;
+    };
+    let store = RedisProgressStore::new(
+        &redis_url,
+        format!("vision:test:atomic-progress:{}", uuid::Uuid::new_v4()),
+    )
+    .unwrap();
+    store.clear().await.unwrap();
+    let job_id = uuid::Uuid::new_v4();
+
+    let failed = vision_event_api::domain::JobProgressEvent::new(
+        job_id,
+        JobStatus::Failed,
+        Some(JobStage::Detecting),
+        35,
+        Some("detector failed".into()),
+        0,
+        1,
+    );
+    let accepted = store.publish(failed).await.unwrap().unwrap();
+    assert_eq!(accepted.event.attempt, 1);
+
+    let stale_processing = vision_event_api::domain::JobProgressEvent::new(
+        job_id,
+        JobStatus::Processing,
+        Some(JobStage::Preparing),
+        1,
+        Some("stale worker".into()),
+        0,
+        1,
+    );
+    assert!(store.publish(stale_processing).await.unwrap().is_none());
+
+    let retry = vision_event_api::domain::JobProgressEvent::new(
+        job_id,
+        JobStatus::Pending,
+        Some(JobStage::Preparing),
+        0,
+        Some("retry".into()),
+        0,
+        2,
+    );
+    let retried = store.publish(retry).await.unwrap().unwrap();
+    assert!(retried.event.sequence > accepted.event.sequence);
+    assert_eq!(store.snapshots().await.unwrap()[0].attempt, 2);
+}

@@ -4,6 +4,7 @@ import type {
   EventReview,
   EventRule,
   JobProgressEvent,
+  JobProgressSnapshot,
   VideoJob,
 } from '../types/events';
 
@@ -48,21 +49,27 @@ export const api = {
   subscribeJobProgress: (
     onEvent: (event: JobProgressEvent) => void,
     onStateChange: (state: 'connected' | 'reconnecting') => void,
+    onSnapshot?: (snapshot: JobProgressSnapshot) => void,
   ) => {
     const source = new EventSource('/api/v1/jobs/progress/stream');
     const handleOpen = () => onStateChange('connected');
     const handleProgress = (event: Event) => {
       onEvent(JSON.parse((event as MessageEvent<string>).data) as JobProgressEvent);
     };
+    const handleSnapshot = (event: Event) => {
+      onSnapshot?.(JSON.parse((event as MessageEvent<string>).data) as JobProgressSnapshot);
+    };
     const handleError = () => onStateChange('reconnecting');
 
     source.addEventListener('open', handleOpen);
     source.addEventListener('job-progress', handleProgress);
+    source.addEventListener('job-snapshot', handleSnapshot);
     source.addEventListener('error', handleError);
 
     return () => {
       source.removeEventListener('open', handleOpen);
       source.removeEventListener('job-progress', handleProgress);
+      source.removeEventListener('job-snapshot', handleSnapshot);
       source.removeEventListener('error', handleError);
       source.close();
     };

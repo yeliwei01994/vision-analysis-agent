@@ -1,5 +1,6 @@
 use crate::domain::{unix_time_millis, JobProgressEvent};
 use redis::streams::{StreamRangeReply, StreamReadReply};
+use redis::Script;
 
 const MAX_PROGRESS_EVENTS: usize = 10_000;
 
@@ -30,38 +31,49 @@ impl RedisProgressStore {
 
     pub async fn publish(
         &self,
-        mut event: JobProgressEvent,
-    ) -> redis::RedisResult<StoredJobProgress> {
+        event: JobProgressEvent,
+    ) -> redis::RedisResult<Option<StoredJobProgress>> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let sequence: u64 = redis::cmd("HINCRBY")
-            .arg(&self.sequences)
-            .arg(event.job_id.to_string())
-            .arg(1)
-            .query_async(&mut connection)
-            .await?;
-        event.sequence = sequence;
-        event.updated_at = unix_time_millis();
+        let job_id = event.job_id.to_string();
+        let updated_at = unix_time_millis();
         let payload = serialize_event(&event)?;
-        let (stream_id, _snapshot_written): (String, i64) = redis::pipe()
-            .atomic()
-            .cmd("XADD")
-            .arg(&self.stream)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(MAX_PROGRESS_EVENTS)
-            .arg("*")
-            .arg("payload")
-            .arg(&payload)
-            .cmd("HSET")
-            .arg(&self.snapshots)
-            .arg(event.job_id.to_string())
+        let (accepted, stream_id, stored_payload): (i64, String, String) = Script::new(r#"
+            local existing = redis.call('HGET', KEYS[1], ARGV[1])
+            if existing then
+                local current = cjson.decode(existing)
+                local incoming = cjson.decode(ARGV[3])
+                local current_attempt = tonumber(current.attempt or 0)
+                local incoming_attempt = tonumber(incoming.attempt or 0)
+                local terminal = current.status == 'completed' or current.status == 'failed' or current.status == 'cancelled'
+                if incoming_attempt < current_attempt or (incoming_attempt == current_attempt and terminal) then
+                    return { 0, '', existing }
+                end
+            end
+            local sequence = redis.call('HINCRBY', KEYS[2], ARGV[1], 1)
+            local incoming = cjson.decode(ARGV[3])
+            incoming.sequence = sequence
+            incoming.updated_at = tonumber(ARGV[2])
+            local stored = cjson.encode(incoming)
+            local stream_id = redis.call('XADD', KEYS[3], 'MAXLEN', '~', ARGV[4], '*', 'payload', stored)
+            redis.call('HSET', KEYS[1], ARGV[1], stored)
+            return { 1, stream_id, stored }
+        "#)
+            .key(&self.snapshots)
+            .key(&self.sequences)
+            .key(&self.stream)
+            .arg(&job_id)
+            .arg(updated_at)
             .arg(payload)
-            .query_async(&mut connection)
+            .arg(MAX_PROGRESS_EVENTS)
+            .invoke_async(&mut connection)
             .await?;
-        Ok(StoredJobProgress {
+        if accepted == 0 {
+            return Ok(None);
+        }
+        Ok(Some(StoredJobProgress {
             stream_id,
-            event,
-        })
+            event: deserialize_event(&stored_payload)?,
+        }))
     }
 
     pub async fn snapshots(&self) -> redis::RedisResult<Vec<JobProgressEvent>> {

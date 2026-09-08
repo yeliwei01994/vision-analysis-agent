@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api/client';
-import { applyJobProgressToJob, buildJobProgressFromJob, buildRetryProgress, jobActivityLabel, mergeJobProgress, mergeJobsSnapshot, orderJobsByPriority, progressPercent } from './features/jobProgress';
+import { applyJobProgressToJob, buildJobProgressFromJob, buildRetryProgress, jobActivityLabel, mergeJobProgress, mergeJobProgressSnapshot, mergeJobsSnapshot, orderJobsByPriority, progressPercent } from './features/jobProgress';
 import { JobTaskDrawer } from './features/JobTaskDrawer';
 import { JobsPage, ModelsPage, RulesPage } from './features/WorkspacePages';
 import { detectionSummary, displayEventType, fallbackAnalysis, groupEvents, preciseTime } from './features/eventPresentation';
@@ -274,6 +274,11 @@ export default function App() {
       } else {
         stopPolling();
       }
+    }, (snapshot) => {
+      setJobPool(current => {
+        const merged = mergeJobProgressSnapshot(current.jobsById, current.progressById, snapshot);
+        return { ...current, ...merged, activeJobId: pickActiveJobId(merged.jobsById, current.activeJobId) };
+      });
     });
 
     return () => {

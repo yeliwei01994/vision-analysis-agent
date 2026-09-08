@@ -34,7 +34,7 @@ class FakeEventSource {
 
   emit(type: string, data?: string) {
     const event =
-      type === 'job-progress'
+      type === 'job-progress' || type === 'job-snapshot'
         ? new MessageEvent(type, { data })
         : new Event(type);
 
@@ -99,5 +99,23 @@ describe('api.subscribeJobProgress', () => {
     expect(source.listenerCount('job-progress')).toBe(0);
     expect(source.listenerCount('error')).toBe(0);
     expect(source.closed).toBe(true);
+  });
+
+  it('forwards full job snapshots so reconnect calibration reaches app state', () => {
+    vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource);
+    const onEvent = vi.fn<(event: JobProgressEvent) => void>();
+    const onStateChange = vi.fn<(state: 'connected' | 'reconnecting') => void>();
+    const onSnapshot = vi.fn();
+    api.subscribeJobProgress(onEvent, onStateChange, onSnapshot);
+
+    FakeEventSource.instances[0].emit('job-snapshot', JSON.stringify({
+      reason: 'lagged',
+      jobs: [{ job_id: 'job-1', status: 'processing', progress: 42, sequence: 8, attempt: 2 }],
+    }));
+
+    expect(onSnapshot).toHaveBeenCalledWith({
+      reason: 'lagged',
+      jobs: [{ job_id: 'job-1', status: 'processing', progress: 42, sequence: 8, attempt: 2 }],
+    });
   });
 });

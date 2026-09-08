@@ -8,6 +8,7 @@ import {
   jobStageLabel,
   jobStatusLabel,
   mergeJobProgress,
+  mergeJobProgressSnapshot,
   mergeJobsSnapshot,
 } from './jobProgress';
 import type { JobProgressEvent, VideoJob } from '../types/events';
@@ -113,6 +114,24 @@ describe('job progress', () => {
     expect(next.progress).toBe(1);
   });
 
+  it('accepts a newer retry attempt even when the previous attempt was terminal', () => {
+    const failed: JobProgressEvent = { ...baseEvent, status: 'failed', progress: 35, sequence: 9, attempt: 1 };
+    const retry: JobProgressEvent = { ...failed, status: 'processing', progress: 1, sequence: 1, attempt: 2 };
+
+    expect(mergeJobProgress(failed, retry)).toEqual(retry);
+  });
+
+  it('calibrates visible jobs from a full progress snapshot after reconnect or lag', () => {
+    const merged = mergeJobProgressSnapshot(
+      { 'job-1': { ...baseJob, status: 'processing', progress: 1 } },
+      { 'job-1': { ...baseEvent, status: 'processing', progress: 5, sequence: 2, attempt: 2 } },
+      { reason: 'lagged', jobs: [{ ...baseEvent, status: 'processing', progress: 42, sequence: 8, attempt: 2 }] },
+    );
+
+    expect(merged.jobsById['job-1'].progress).toBe(42);
+    expect(merged.progressById['job-1'].progress).toBe(42);
+  });
+
   it('preserves the active in-flight job when a stale snapshot does not include it yet', () => {
     const previous = {
       'job-1': { ...baseJob, status: 'processing', progress: 10 },
@@ -158,7 +177,7 @@ describe('job progress', () => {
         'job-1': completedJob,
       },
       progressById: {
-        'job-1': { job_id: 'job-1', status: 'completed', progress: 100, sequence: 3, estimated_remaining_ms: null },
+        'job-1': { job_id: 'job-1', status: 'completed', progress: 100, sequence: 3, estimated_remaining_ms: null, stage: undefined, message: undefined, attempt: 0 },
       },
     });
   });
@@ -166,7 +185,7 @@ describe('job progress', () => {
   it('replaces cached terminal progress when a retry starts and when the server accepts processing again', () => {
     const terminal: JobProgressEvent = { ...baseEvent, status: 'failed', progress: 100, sequence: 5 };
     const retrying = buildRetryProgress('job-1', terminal);
-    const accepted = buildJobProgressFromJob({ ...baseJob, status: 'processing', progress: 1 } satisfies VideoJob, retrying);
+    const accepted = buildJobProgressFromJob({ ...baseJob, status: 'processing', progress: 1, attempt: 1 } satisfies VideoJob, retrying);
 
     expect(retrying).toEqual({
       job_id: 'job-1',
@@ -174,6 +193,7 @@ describe('job progress', () => {
       progress: 0,
       sequence: 6,
       estimated_remaining_ms: null,
+      attempt: 1,
     });
     expect(accepted).toEqual({
       job_id: 'job-1',
@@ -181,6 +201,9 @@ describe('job progress', () => {
       progress: 1,
       sequence: 7,
       estimated_remaining_ms: null,
+      attempt: 1,
+      stage: undefined,
+      message: undefined,
     });
   });
 

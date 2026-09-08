@@ -34,3 +34,11 @@ The resumed batch additionally fixed the frontend's backend-percent interpretati
 Focused frontend regressions passed at 23/23 after the percentage fix. The frontend production build passed. A subsequent full frontend run exposed only the expected reconnect call-count assertion after immediate calibration (46 passed, 1 failed); the assertion was updated. A backend API contract run exposed only the obsolete expected terminal progress value (19 passed, 1 failed); the assertion was updated to preserve the actual failure progress. The post-update combined run was interrupted by the execution approval timeout before returning output and was not retried.
 
 Current commit status is intentionally a partial final-review batch: the remaining frontend history/ETA claim semantics and full deployed browser smoke verification still require a later run with a clean test process; the known MySQL PoolTimedOut environment issue remains documented above.
+
+## Review-blocker follow-up
+
+- The frontend now consumes the SSE job-snapshot event and applies every snapshot event through the same monotonic merge path, so reconnect and lag snapshots recalibrate visible job state.
+- Progress events now carry optional attempt metadata in the frontend contract; newer attempts supersede prior terminal events while older attempts remain ignored.
+- Redis publication now uses one Lua transaction to compare attempts/terminal state, allocate the per-job sequence, append the stream event, and update the snapshot. A stale same-attempt terminal overwrite does not increment the sequence or publish.
+
+Follow-up verification: frontend snapshot/attempt focused suite 19/19 passed; frontend production build passed; Redis-backed backend progress/atomicity suite 8/8 passed.
