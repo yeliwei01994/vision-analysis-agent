@@ -111,6 +111,60 @@ impl RedisProgressStore {
         self.latest_stream_id().await
     }
 
+    pub async fn trim_recovery_calibration(
+        &self,
+        cursor: &str,
+    ) -> redis::RedisResult<(bool, String, Vec<JobProgressEvent>)> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let (trimmed, latest, payloads_json): (i64, String, String) = Script::new(
+            r#"
+            local function stream_id_less(left, right)
+                local left_major, left_minor = string.match(left, "^(%d+)%-(%d+)$")
+                local right_major, right_minor = string.match(right, "^(%d+)%-(%d+)$")
+                if not left_major or not right_major then
+                    return false
+                end
+                left_major = tonumber(left_major)
+                left_minor = tonumber(left_minor)
+                right_major = tonumber(right_major)
+                right_minor = tonumber(right_minor)
+                return left_major < right_major or
+                    (left_major == right_major and left_minor < right_minor)
+            end
+
+            local head = redis.call('XRANGE', KEYS[1], '-', '+', 'COUNT', 1)
+            local latest = redis.call('XREVRANGE', KEYS[1], '+', '-', 'COUNT', 1)
+            local trimmed = 0
+            if ARGV[1] ~= '0-0' and #head > 0 and stream_id_less(ARGV[1], head[1][1]) then
+                trimmed = 1
+            end
+            local latest_id = '0-0'
+            if #latest > 0 then
+                latest_id = latest[1][1]
+            end
+            return { trimmed, latest_id, cjson.encode(redis.call('HVALS', KEYS[2])) }
+            "#,
+        )
+        .key(&self.stream)
+        .key(&self.snapshots)
+        .arg(cursor)
+        .invoke_async(&mut connection)
+        .await?;
+        let payloads: Vec<String> = serde_json::from_str(&payloads_json).map_err(|error| {
+            redis::RedisError::from((
+                redis::ErrorKind::TypeError,
+                "invalid Redis progress snapshot payload",
+                error.to_string(),
+            ))
+        })?;
+        let mut snapshots = payloads
+            .into_iter()
+            .map(|payload| deserialize_event(&payload))
+            .collect::<redis::RedisResult<Vec<_>>>()?;
+        snapshots.sort_by_key(|event| (event.updated_at, event.job_id));
+        Ok((trimmed != 0, latest, snapshots))
+    }
+
     pub async fn read_after(
         &self,
         cursor: &str,

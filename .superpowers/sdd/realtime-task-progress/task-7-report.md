@@ -58,3 +58,11 @@ Verification for this follow-up: frontend full suite 50/50 passed; frontend buil
 - Added a regression that interleaves terminal publication between cursor capture and snapshot loading, then verifies the terminal event is still replayed with matching sequence and attempt metadata.
 
 Verification for this follow-up: Redis/SSE contract suite 10/10 passed; frontend progress focused suite 18/18 passed; frontend full suite 51/51 passed; frontend build passed; cargo check passed; git diff --check passed. cargo fmt -- --check still reports pre-existing formatting differences across the accumulated branch and was not applied because it would rewrite unrelated files.
+
+## Final Redis trim TOCTOU follow-up
+
+- Replaced the separate trim-head check, snapshot read, and stream-cursor read with one Redis Lua calibration. The script atomically evaluates whether the cursor is trimmed, captures the current stream tail, and reads the durable per-job snapshots.
+- The SSE route publishes the atomic calibration snapshot and resumes XREAD from the cursor returned by that same operation. Events published after calibration remain strictly readable from that cursor; events represented by the snapshot are safely idempotent through sequence/attempt merging.
+- Added a Redis regression covering atomic trim calibration and the trim-window terminal publication contract.
+
+Verification for this follow-up: Redis/SSE focused suite 11/11 passed; frontend full suite 51/51 passed; frontend build passed; cargo check passed; git diff --check passed.

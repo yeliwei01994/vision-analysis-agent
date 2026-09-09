@@ -456,24 +456,13 @@ async fn stream_redis_progress(
     }
 
     loop {
-        match progress_store.cursor_is_trimmed(&cursor).await {
-            Ok(true) => {
-                let resume_cursor = progress_store
-                    .capture_stream_cursor()
-                    .await
-                    .unwrap_or_else(|error| {
-                        eprintln!("failed to capture Redis progress cursor after trim: {error}");
-                        "0-0".into()
-                    });
-                let snapshot = progress_store.snapshots().await.unwrap_or_else(|error| {
-                    eprintln!("failed to read Redis progress snapshot after trim: {error}");
-                    state.job_progress_snapshot()
-                });
+        match progress_store.trim_recovery_calibration(&cursor).await {
+            Ok((true, resume_cursor, snapshot)) => {
                 if sender.send(Ok(snapshot_sse("trimmed", snapshot))).await.is_err() { return; }
                 cursor = resume_cursor;
                 continue;
             }
-            Ok(false) => {}
+            Ok((false, _, _)) => {}
             Err(error) => eprintln!("failed to inspect Redis progress cursor: {error}"),
         }
         match progress_store.read_after(&cursor, 1_000).await {

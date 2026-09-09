@@ -401,3 +401,32 @@ async fn redis_trim_recovery_keeps_terminal_event_published_between_cursor_and_s
     assert_eq!(replayed_terminal.event.sequence, snapshot[0].sequence);
     assert_eq!(replayed_terminal.event.attempt, snapshot[0].attempt);
 }
+
+#[tokio::test]
+async fn redis_trim_calibration_atomically_captures_head_snapshot_and_resume_cursor() {
+    dotenvy::dotenv().ok();
+    let Ok(redis_url) = std::env::var("REDIS_URL") else {
+        eprintln!("REDIS_URL is required for Redis atomic calibration test");
+        return;
+    };
+    let store = RedisProgressStore::new(
+        &redis_url,
+        format!("vision:test:atomic-calibration:{}", uuid::Uuid::new_v4()),
+    ).unwrap();
+    store.clear().await.unwrap();
+    let job_id = uuid::Uuid::new_v4();
+    let first = store.publish(vision_event_api::domain::JobProgressEvent::new(
+        job_id, JobStatus::Processing, Some(JobStage::Detecting), 10, Some("first".into()), 0, 1,
+    )).await.unwrap().unwrap();
+    store.publish(vision_event_api::domain::JobProgressEvent::new(
+        job_id, JobStatus::Processing, Some(JobStage::Detecting), 20, Some("second".into()), 0, 1,
+    )).await.unwrap().unwrap();
+    store.trim_to(1).await.unwrap();
+
+    let (trimmed, resume_cursor, snapshot) =
+        store.trim_recovery_calibration(&first.stream_id).await.unwrap();
+    assert!(trimmed);
+    assert!(!resume_cursor.is_empty());
+    assert_eq!(snapshot[0].progress, 20);
+    assert_eq!(snapshot[0].sequence, 2);
+}
