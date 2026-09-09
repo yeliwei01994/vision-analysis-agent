@@ -27,6 +27,7 @@ backend/media/
 .idea/
 .vscode/
 .worktrees/
+.superpowers/sdd/
 *.swp
 Thumbs.db
 .DS_Store
