@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use sqlx::{mysql::MySqlPoolOptions, Row};
+use sqlx::{postgres::PgPoolOptions, Row};
 use vision_event_api::{
     application::AppState,
     domain::{Detection, JobStatus},
@@ -201,8 +201,8 @@ async fn persisted_video_job_can_be_loaded_by_worker() {
     assert_eq!(loaded.duration_ms, 1_234);
     assert_eq!(loaded.progress, 0);
 
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .execute(&database.pool)
         .await;
 }
@@ -229,14 +229,14 @@ async fn worker_refreshes_rules_saved_by_the_api_process() {
     let loaded = state.event_rules().into_iter().find(|rule| rule.event_type == event_type).unwrap();
     assert_eq!(loaded.geometry.unwrap().points[0], [0.2, 0.2]);
 
-    let _ = sqlx::query("DELETE FROM event_rules WHERE event_type = ?")
+    let _ = sqlx::query("DELETE FROM event_rules WHERE event_type = $1")
         .bind(event_type)
         .execute(&database.pool)
         .await;
 }
 
 #[tokio::test]
-async fn failed_video_processing_is_persisted_to_mysql() {
+async fn failed_video_processing_is_persisted_to_postgresql() {
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");
         return;
@@ -261,16 +261,16 @@ async fn failed_video_processing_is_persisted_to_mysql() {
 
     assert!(!worker::process_job(state.clone(), job.id).await.unwrap());
 
-    let row = sqlx::query("SELECT status, progress FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let row = sqlx::query("SELECT status, progress FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .fetch_one(&database.pool)
         .await
         .unwrap();
     assert_eq!(row.try_get::<String, _>("status").unwrap(), "failed");
-    assert_eq!(row.try_get::<u8, _>("progress").unwrap(), 100);
+    assert_eq!(row.try_get::<i16, _>("progress").unwrap(), 100);
 
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .execute(&database.pool)
         .await;
     assert_eq!(state.job(job.id).unwrap().status, JobStatus::Failed);
@@ -315,9 +315,9 @@ async fn failed_processing_publishes_the_actual_stage_and_user_facing_reason() {
 
 #[tokio::test]
 async fn terminal_failure_is_not_published_when_save_job_fails() {
-    let pool = MySqlPoolOptions::new()
+    let pool = PgPoolOptions::new()
         .acquire_timeout(std::time::Duration::from_millis(50))
-        .connect_lazy("mysql://root:root@127.0.0.1:1/vision")
+        .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/vision")
         .unwrap();
     let state = AppState::default().with_integrations(Some(Database { pool }), None);
     let mut subscriber = state.subscribe_job_progress();
