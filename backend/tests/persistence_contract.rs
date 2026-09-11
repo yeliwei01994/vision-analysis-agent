@@ -1,13 +1,18 @@
 use std::env;
 use uuid::Uuid;
+use vision_event_api::domain::{
+    AnalysisResult, Detection, Event, Evidence, JobStage, JobStatus, VideoJob,
+};
 use vision_event_api::persistence::{Database, DatabaseConfig};
 use vision_event_api::queue::QueueMessage;
-use vision_event_api::domain::{JobStage, JobStatus, VideoJob};
 
 #[test]
 fn database_config_uses_explicit_url() {
-    let config = DatabaseConfig::new("mysql://vision:secret@mysql/vision_events");
-    assert_eq!(config.url, "mysql://vision:secret@mysql/vision_events");
+    let config = DatabaseConfig::new("postgres://vision:secret@postgres/vision_events");
+    assert_eq!(
+        config.url,
+        "postgres://vision:secret@postgres/vision_events"
+    );
 }
 
 #[test]
@@ -25,6 +30,124 @@ fn migrations_are_kept_in_repository() {
         std::path::Path::new("migrations/001_initial.sql").exists()
             || env::var("CARGO_MANIFEST_DIR").is_ok()
     );
+}
+
+#[tokio::test]
+async fn migrated_schema_uses_native_jsonb_and_expected_gin_indexes() {
+    dotenvy::dotenv().ok();
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    database.migrate().await.unwrap();
+
+    let jsonb_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND (table_name, column_name) IN ( \
+             ('events', 'objects_json'), \
+             ('events', 'evidence_json'), \
+             ('events', 'analysis_json'), \
+             ('event_rules', 'geometry_json') \
+           ) \
+           AND data_type = 'jsonb'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(jsonb_columns, 4);
+
+    let gin_indexes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_indexes \
+         WHERE schemaname = 'public' \
+           AND indexname IN ('idx_events_objects_json_gin', 'idx_event_rules_geometry_json_gin') \
+           AND indexdef ILIKE '%USING gin%'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(gin_indexes, 2);
+}
+
+#[tokio::test]
+async fn yolo_jsonb_payloads_round_trip_and_support_containment() {
+    dotenvy::dotenv().ok();
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    let pool: &sqlx::PgPool = &database.pool;
+    database.migrate().await.unwrap();
+
+    let job = VideoJob::new("yolo-jsonb-round-trip.mp4".into(), 2_000);
+    database.save_job(&job).await.unwrap();
+
+    let objects_json = serde_json::json!([{
+        "class_name": "person",
+        "confidence": 0.875,
+        "bbox": [12.5, 24.0, 88.0, 176.5],
+        "track_id": 42
+    }]);
+    let evidence_json = serde_json::json!({
+        "thumbnail_url": "/media/thumbnail.jpg",
+        "clip_url": "/media/clip.mp4",
+        "frame_urls": ["/media/frame.jpg"],
+        "frames": [{
+            "timestamp_ms": 750,
+            "image_url": "/media/frame.jpg",
+            "detections": objects_json.clone()
+        }]
+    });
+    let analysis_json = serde_json::json!({
+        "summary": "Person remained in the zone",
+        "severity": "high",
+        "suggestion": "Review the annotated clip",
+        "report_source": "vision-language-model"
+    });
+
+    let mut event = Event::new(
+        job.id,
+        "person_stay".into(),
+        500,
+        1_500,
+        serde_json::from_value::<Vec<Detection>>(objects_json.clone()).unwrap(),
+    );
+    event.evidence = serde_json::from_value::<Evidence>(evidence_json.clone()).unwrap();
+    event.analysis = Some(serde_json::from_value::<AnalysisResult>(analysis_json.clone()).unwrap());
+    database.save_event(&event).await.unwrap();
+
+    let loaded = database.get_event(event.id).await.unwrap().unwrap();
+    assert_eq!(serde_json::to_value(&loaded.objects).unwrap(), objects_json);
+    assert_eq!(
+        serde_json::to_value(&loaded.evidence).unwrap(),
+        evidence_json
+    );
+    assert_eq!(
+        serde_json::to_value(&loaded.analysis).unwrap(),
+        analysis_json
+    );
+
+    let matches: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE objects_json @> $1 AND id = $2")
+            .bind(sqlx::types::Json(
+                serde_json::json!([{"class_name": "person"}]),
+            ))
+            .bind(event.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(matches, 1);
+
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
+        .execute(pool)
+        .await;
 }
 
 #[tokio::test]
@@ -50,7 +173,9 @@ async fn annotated_video_fields_round_trip_on_video_jobs() {
         eprintln!("DATABASE_URL is required for this integration test");
         return;
     };
-    let database = Database::connect(&DatabaseConfig::new(database_url)).await.unwrap();
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
     database.migrate().await.unwrap();
     let mut job = VideoJob::new("annotated-playback-test.mp4".into(), 2_000);
     job.annotated_video_url = Some(format!("/media/annotated/{}.mp4", job.id));
@@ -61,7 +186,10 @@ async fn annotated_video_fields_round_trip_on_video_jobs() {
     assert_eq!(loaded.annotated_video_url, job.annotated_video_url);
     assert_eq!(loaded.annotated_video_status, Some("ready".into()));
     assert_eq!(loaded.annotated_video_error, None);
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?").bind(job.id.to_string()).execute(&database.pool).await;
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
+        .execute(&database.pool)
+        .await;
 }
 
 #[tokio::test]
@@ -103,8 +231,8 @@ async fn terminal_job_rows_reject_stale_processing_writes_until_explicit_retry()
     assert_eq!(retried.progress, 0);
     assert_eq!(retried.attempt, 1);
 
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(failed.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(failed.id)
         .execute(&database.pool)
         .await;
 }
