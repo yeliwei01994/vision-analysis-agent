@@ -1,9 +1,9 @@
 CREATE TABLE IF NOT EXISTS video_jobs (
   id UUID PRIMARY KEY,
   filename VARCHAR(255) NOT NULL,
-  duration_ms BIGINT NOT NULL DEFAULT 0,
+  duration_ms BIGINT NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
   status VARCHAR(32) NOT NULL,
-  progress SMALLINT NOT NULL DEFAULT 0,
+  progress SMALLINT NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 255),
   source_uri TEXT,
   deleted_at TIMESTAMPTZ,
   annotated_video_url TEXT,
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS video_jobs (
   annotated_video_error TEXT,
   progress_stage VARCHAR(64),
   status_message TEXT,
-  attempt INTEGER NOT NULL DEFAULT 0,
+  attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS events (
   id UUID PRIMARY KEY,
   job_id UUID NOT NULL REFERENCES video_jobs(id) ON DELETE CASCADE,
   event_type VARCHAR(128) NOT NULL,
-  start_time_ms BIGINT NOT NULL,
-  end_time_ms BIGINT NOT NULL,
+  start_time_ms BIGINT NOT NULL CHECK (start_time_ms >= 0),
+  end_time_ms BIGINT NOT NULL CHECK (end_time_ms >= 0),
   severity VARCHAR(32) NOT NULL,
   status VARCHAR(32) NOT NULL,
   confidence REAL NOT NULL,
@@ -56,10 +56,10 @@ CREATE TABLE IF NOT EXISTS event_rules (
   event_type VARCHAR(128) PRIMARY KEY,
   class_name VARCHAR(128) NOT NULL,
   min_confidence REAL NOT NULL,
-  min_duration_ms BIGINT NOT NULL,
+  min_duration_ms BIGINT NOT NULL CHECK (min_duration_ms >= 0),
   version VARCHAR(64) NOT NULL,
   geometry_json JSONB,
-  threshold_value INTEGER,
+  threshold_value INTEGER CHECK (threshold_value >= 0),
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
