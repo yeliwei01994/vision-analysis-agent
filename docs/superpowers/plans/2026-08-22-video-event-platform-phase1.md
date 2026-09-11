@@ -4,7 +4,7 @@
 
 **Goal:** 建立可运行的视频事件检索平台第一阶段骨架，使前端、Rust API、事件领域模型、Mock 推理流程和 Docker 部署契约先完整跑通。
 
-**Architecture:** Rust Axum API 提供稳定的 `/api/v1` 契约，领域模型与检测器、大模型分析器通过 trait 解耦。React 前端先使用真实 API 和可降级的 Mock 数据展示任务、事件和详情；Redis/MySQL/MinIO 先通过 Compose 预留，第一阶段 API 使用内存仓储以降低启动门槛。
+**Architecture:** Rust Axum API 提供稳定的 `/api/v1` 契约，领域模型与检测器、大模型分析器通过 trait 解耦。React 前端先使用真实 API 和可降级的 Mock 数据展示任务、事件和详情；Redis/PostgreSQL/MinIO 先通过 Compose 预留，第一阶段 API 使用内存仓储以降低启动门槛。
 
 **Tech Stack:** Rust, Axum, Tokio, Serde, React, Vite, TypeScript, TanStack Query, Docker Compose, Nginx.
 
@@ -15,7 +15,7 @@
 - 原图片分析接口保持兼容方向，视频能力新增 `/api/v1`，不删除已有能力。
 - 事件类型、规则、Prompt 和模型必须使用可扩展字符串/版本字段，不能把具体检测类别写死在页面或 API 路由中。
 - 第一阶段不接真实 YOLO、视频流和真实大模型；使用明确的 Mock Adapter 验证契约。
-- 二进制视频、图片和证据不存入 MySQL 或 Redis。
+- 二进制视频、图片和证据不存入 PostgreSQL 或 Redis。
 - 任何异步任务和事件生成接口必须具备可观察的状态字段。
 - 新增代码必须先有失败测试，再写最小实现。
 
@@ -91,7 +91,7 @@
 - Create: `.env.example`
 - Create: `README.md`
 
-- [ ] Add API, frontend, MySQL and Redis services with health checks and volumes.
+- [ ] Add API, frontend, PostgreSQL and Redis services with health checks and volumes.
 - [ ] Configure Nginx SPA fallback, `/api/` proxy and `/media/` placeholder path.
 - [ ] Document local development and test commands.
 - [ ] Validate Compose configuration and run Rust/frontend checks.

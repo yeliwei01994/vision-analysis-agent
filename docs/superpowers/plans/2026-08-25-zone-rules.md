@@ -4,9 +4,9 @@
 
 **Goal:** Add persisted polygon-based intrusion, dwell, and occupancy-limit rules with a dual-background editor.
 
-**Architecture:** Rules gain geometry, threshold, and enabled fields and are stored in MySQL. A pure geometry evaluator produces `RuleEvent` candidates from in-zone detections; the existing worker merge/evidence pipeline persists them. React serializes rectangles as polygons and uses either a blank 16:9 canvas or a selected evidence-frame image as its editor background.
+**Architecture:** Rules gain geometry, threshold, and enabled fields and are stored in PostgreSQL. A pure geometry evaluator produces `RuleEvent` candidates from in-zone detections; the existing worker merge/evidence pipeline persists them. React serializes rectangles as polygons and uses either a blank 16:9 canvas or a selected evidence-frame image as its editor background.
 
-**Tech Stack:** Rust, SQLx/MySQL migrations, Axum, React, TypeScript, Vitest.
+**Tech Stack:** Rust, SQLx/PostgreSQL migrations, Axum, React, TypeScript, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-08-25-zone-rules-design.md`
 
