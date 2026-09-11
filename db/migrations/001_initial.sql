@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS video_jobs (
   annotated_video_error TEXT,
   progress_stage VARCHAR(64),
   status_message TEXT,
-  attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+  attempt BIGINT NOT NULL DEFAULT 0 CHECK (attempt >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS event_rules (
   min_duration_ms BIGINT NOT NULL CHECK (min_duration_ms >= 0),
   version VARCHAR(64) NOT NULL,
   geometry_json JSONB,
-  threshold_value INTEGER CHECK (threshold_value >= 0),
+  threshold_value BIGINT CHECK (threshold_value >= 0),
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

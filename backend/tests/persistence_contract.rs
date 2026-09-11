@@ -70,6 +70,20 @@ async fn migrated_schema_uses_native_jsonb_and_expected_gin_indexes() {
     .await
     .unwrap();
     assert_eq!(gin_indexes, 2);
+
+    let bigint_u32_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND (table_name, column_name) IN ( \
+             ('video_jobs', 'attempt'), \
+             ('event_rules', 'threshold_value') \
+           ) \
+           AND data_type = 'bigint'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(bigint_u32_columns, 2);
 }
 
 #[tokio::test]
@@ -120,6 +134,7 @@ async fn yolo_jsonb_payloads_round_trip_and_support_containment() {
     );
     event.evidence = serde_json::from_value::<Evidence>(evidence_json.clone()).unwrap();
     event.analysis = Some(serde_json::from_value::<AnalysisResult>(analysis_json.clone()).unwrap());
+    event.reviewed_at = Some("1704067200".into());
     database.save_event(&event).await.unwrap();
 
     let loaded = database.get_event(event.id).await.unwrap().unwrap();
@@ -132,6 +147,7 @@ async fn yolo_jsonb_payloads_round_trip_and_support_containment() {
         serde_json::to_value(&loaded.analysis).unwrap(),
         analysis_json
     );
+    assert_eq!(loaded.reviewed_at.as_deref(), Some("2024-01-01T00:00:00Z"));
 
     let matches: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE objects_json @> $1 AND id = $2")
@@ -144,9 +160,64 @@ async fn yolo_jsonb_payloads_round_trip_and_support_containment() {
             .unwrap();
     assert_eq!(matches, 1);
 
+    event.analysis = None;
+    database.save_event(&event).await.unwrap();
+    let without_analysis = database.get_event(event.id).await.unwrap().unwrap();
+    assert!(without_analysis.analysis.is_none());
+    let analysis_is_null: bool =
+        sqlx::query_scalar("SELECT analysis_json IS NULL FROM events WHERE id = $1")
+            .bind(event.id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(analysis_is_null);
+
     let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
         .bind(job.id)
         .execute(pool)
+        .await;
+}
+
+#[tokio::test]
+async fn u32_attempt_and_rule_threshold_round_trip_without_loss() {
+    dotenvy::dotenv().ok();
+    let Ok(database_url) = env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL is required for this integration test");
+        return;
+    };
+    let database = Database::connect(&DatabaseConfig::new(database_url))
+        .await
+        .unwrap();
+    database.migrate().await.unwrap();
+
+    let mut job = VideoJob::new("u32-domain-test.mp4".into(), 1_000);
+    job.attempt = u32::MAX;
+    database.save_job(&job).await.unwrap();
+    assert_eq!(
+        database.get_job(job.id).await.unwrap().unwrap().attempt,
+        u32::MAX
+    );
+
+    let event_type = format!("u32_threshold_{}", Uuid::new_v4());
+    let mut rule = vision_event_api::rules::EventRule::new(&event_type, "person", 0.5, 1_000);
+    rule.threshold = Some(u32::MAX);
+    database.save_rule(&rule).await.unwrap();
+    let loaded_threshold = database
+        .list_rules()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.event_type == event_type)
+        .and_then(|candidate| candidate.threshold);
+    assert_eq!(loaded_threshold, Some(u32::MAX));
+
+    let _ = sqlx::query("DELETE FROM event_rules WHERE event_type = $1")
+        .bind(&event_type)
+        .execute(&database.pool)
+        .await;
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
+        .execute(&database.pool)
         .await;
 }
 

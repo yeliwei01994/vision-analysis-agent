@@ -71,7 +71,7 @@ impl Database {
             .bind(&job.annotated_video_error)
             .bind(job.stage.as_ref().map(stage_name))
             .bind(&job.status_message)
-            .bind(job.attempt as i32)
+            .bind(i64::from(job.attempt))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -156,7 +156,7 @@ impl Database {
     pub async fn save_event(&self, event: &Event) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO events (id, job_id, event_type, start_time_ms, end_time_ms, severity, status, confidence, objects_json, evidence_json, analysis_json, rule_version, prompt_version, detector_version, reviewer, reviewed_at, review_note, disposition, zone_key, association_key) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::timestamptz, $17, $18, $19, $20) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, to_timestamp($16::double precision), $17, $18, $19, $20) \
              ON CONFLICT (id) DO UPDATE SET \
              status = EXCLUDED.status, analysis_json = EXCLUDED.analysis_json, reviewer = EXCLUDED.reviewer, \
              reviewed_at = EXCLUDED.reviewed_at, review_note = EXCLUDED.review_note, disposition = EXCLUDED.disposition, \
@@ -299,7 +299,7 @@ impl Database {
                         .ok()?
                         .map(|value| value.0),
                     threshold: row
-                        .try_get::<Option<i32>, _>("threshold_value")
+                        .try_get::<Option<i64>, _>("threshold_value")
                         .ok()?
                         .and_then(|value| u32::try_from(value).ok()),
                     enabled: row.try_get("enabled").ok()?,
@@ -324,7 +324,7 @@ impl Database {
             .bind(rule.min_duration_ms as i64)
             .bind(&rule.version)
             .bind(rule.geometry.as_ref().map(Json))
-            .bind(rule.threshold.map(|value| value as i32))
+            .bind(rule.threshold.map(i64::from))
             .bind(rule.enabled)
             .execute(&self.pool)
             .await?;
@@ -390,7 +390,7 @@ fn job_from_row(row: &PgRow) -> Option<VideoJob> {
             .as_deref()
             .and_then(stage_from_name),
         status_message: row.try_get("status_message").ok()?,
-        attempt: u32::try_from(row.try_get::<i32, _>("attempt").ok()?).ok()?,
+        attempt: u32::try_from(row.try_get::<i64, _>("attempt").ok()?).ok()?,
         created_at: row
             .try_get::<Option<i64>, _>("created_at_ms")
             .ok()?
