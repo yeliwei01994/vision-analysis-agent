@@ -227,6 +227,7 @@ async fn u32_attempt_and_rule_threshold_round_trip_without_loss() {
 
 #[tokio::test]
 async fn list_events_keeps_rows_with_null_prompt_version() {
+    dotenvy::dotenv().ok();
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");
         return;
@@ -234,11 +235,24 @@ async fn list_events_keeps_rows_with_null_prompt_version() {
     let database = Database::connect(&DatabaseConfig::new(database_url))
         .await
         .unwrap();
+    database.migrate().await.unwrap();
+
+    let job = VideoJob::new("null-prompt-version-test.mp4".into(), 1_000);
+    database.save_job(&job).await.unwrap();
+    let event = Event::new(job.id, "null_prompt_test".into(), 0, 500, Vec::new());
+    assert!(event.prompt_version.is_none());
+    database.save_event(&event).await.unwrap();
     let events = database.list_events().await.unwrap();
-    assert!(
-        events.iter().any(|event| event.prompt_version.is_none()),
-        "events with a NULL prompt_version must remain readable"
-    );
+    let loaded = events
+        .iter()
+        .find(|candidate| candidate.id == event.id)
+        .expect("the saved event must remain readable");
+    assert!(loaded.prompt_version.is_none());
+
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
+        .execute(&database.pool)
+        .await;
 }
 
 #[tokio::test]
