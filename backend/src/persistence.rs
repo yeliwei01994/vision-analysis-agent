@@ -193,7 +193,7 @@ impl Database {
 
     pub async fn list_events_limited(&self, limit: usize) -> Result<Vec<Event>, sqlx::Error> {
         let limit = limit.clamp(1, 200);
-        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, CASE WHEN e.reviewed_at IS NULL THEN NULL ELSE to_char(e.reviewed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') END AS reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC LIMIT $1")
+        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, EXTRACT(EPOCH FROM e.reviewed_at)::BIGINT::TEXT AS reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&self.pool).await?;
         Ok(rows
@@ -203,7 +203,7 @@ impl Database {
     }
 
     pub async fn list_events_all(&self) -> Result<Vec<Event>, sqlx::Error> {
-        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, CASE WHEN e.reviewed_at IS NULL THEN NULL ELSE to_char(e.reviewed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') END AS reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC")
+        let rows = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, EXTRACT(EPOCH FROM e.reviewed_at)::BIGINT::TEXT AS reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE j.deleted_at IS NULL ORDER BY e.created_at DESC")
             .fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
@@ -212,7 +212,7 @@ impl Database {
     }
 
     pub async fn get_event(&self, id: Uuid) -> Result<Option<Event>, sqlx::Error> {
-        let row = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, CASE WHEN e.reviewed_at IS NULL THEN NULL ELSE to_char(e.reviewed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') END AS reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE e.id = $1 AND j.deleted_at IS NULL")
+        let row = sqlx::query("SELECT e.id, e.job_id, e.event_type, e.start_time_ms, e.end_time_ms, e.severity, e.status, e.confidence, e.objects_json, e.evidence_json, e.analysis_json, e.rule_version, e.prompt_version, e.detector_version, e.reviewer, EXTRACT(EPOCH FROM e.reviewed_at)::BIGINT::TEXT AS reviewed_at, e.review_note, e.disposition, e.zone_key, e.association_key FROM events e INNER JOIN video_jobs j ON j.id = e.job_id WHERE e.id = $1 AND j.deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;

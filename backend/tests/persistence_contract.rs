@@ -147,7 +147,11 @@ async fn yolo_jsonb_payloads_round_trip_and_support_containment() {
         serde_json::to_value(&loaded.analysis).unwrap(),
         analysis_json
     );
-    assert_eq!(loaded.reviewed_at.as_deref(), Some("2024-01-01T00:00:00Z"));
+    assert_eq!(loaded.reviewed_at.as_deref(), Some("1704067200"));
+
+    database.save_event(&loaded).await.unwrap();
+    let resaved = database.get_event(event.id).await.unwrap().unwrap();
+    assert_eq!(resaved.reviewed_at.as_deref(), Some("1704067200"));
 
     let matches: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE objects_json @> $1 AND id = $2")
