@@ -253,7 +253,10 @@ async fn upload_then_process_video_reports_processing_failure_for_invalid_media(
 
 #[tokio::test]
 async fn upload_accepts_video_larger_than_axum_default_body_limit() {
-    let service = app();
+    let temporary = tempfile::tempdir().unwrap();
+    let mut state = AppState::default();
+    state.storage = MediaStorage::new(temporary.path().join("media"));
+    let service = api::router(state);
     let payload = vec![b'x'; 3 * 1024 * 1024];
     let mut body = b"--large\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.mp4\"\r\nContent-Type: video/mp4\r\n\r\n".to_vec();
     body.extend_from_slice(&payload);
