@@ -261,19 +261,38 @@ async fn failed_video_processing_is_persisted_to_postgresql() {
 
     assert!(!worker::process_job(state.clone(), job.id).await.unwrap());
 
-    let row = sqlx::query("SELECT status, progress FROM video_jobs WHERE id = $1")
-        .bind(job.id)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
+    let row = sqlx::query(
+        "SELECT status, progress, progress_stage, status_message FROM video_jobs WHERE id = $1",
+    )
+    .bind(job.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     assert_eq!(row.try_get::<String, _>("status").unwrap(), "failed");
-    assert_eq!(row.try_get::<i16, _>("progress").unwrap(), 100);
+    assert_eq!(row.try_get::<i16, _>("progress").unwrap(), 35);
+    assert_eq!(
+        row.try_get::<String, _>("progress_stage").unwrap(),
+        "extracting_frames"
+    );
+    let persisted_message = row.try_get::<String, _>("status_message").unwrap();
+    assert!(persisted_message.contains("视频帧提取失败"));
+
+    let saved = state.job(job.id).unwrap();
+    assert_eq!(saved.status, JobStatus::Failed);
+    assert_eq!(saved.progress, 35);
+    assert_eq!(
+        saved.stage,
+        Some(vision_event_api::domain::JobStage::ExtractingFrames)
+    );
+    assert_eq!(
+        saved.status_message.as_deref(),
+        Some(persisted_message.as_str())
+    );
 
     let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
         .bind(job.id)
         .execute(&database.pool)
         .await;
-    assert_eq!(state.job(job.id).unwrap().status, JobStatus::Failed);
 }
 
 #[tokio::test]
