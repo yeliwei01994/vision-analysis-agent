@@ -6,7 +6,7 @@
 
 **Architecture:** worker 复用现有 YOLO 抽帧结果，将每一帧标注后用 ffmpeg 编码为 MP4，回放文件保存到 `media/annotated`。`VideoJob` 持久化回放 URL、状态和错误信息；回放失败不影响事件生成和任务完成。前端通过任务关联获取回放信息，在详情页提供播放器和状态降级。
 
-**Tech Stack:** Rust 2021、Axum、SQLx/MySQL、Tokio、image crate、ffmpeg/ffprobe、React、TypeScript、Vitest、Testing Library。
+**Tech Stack:** Rust 2021、Axum、SQLx/PostgreSQL、Tokio、image crate、ffmpeg/ffprobe、React、TypeScript、Vitest、Testing Library。
 
 **Spec:** `docs/superpowers/specs/2026-08-26-annotated-video-playback-design.md`
 

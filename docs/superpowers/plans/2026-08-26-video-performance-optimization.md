@@ -6,7 +6,7 @@
 
 **Architecture:** 先优化前端任务状态查询，再优化事件接口和上传存储，最后优化 Worker 的进度持久化与视频推理流水线。每个阶段独立可验证，先保留现有 API 兼容性，再逐步引入分页、增量查询和流式处理。
 
-**Tech Stack:** React + TypeScript + Vitest；Rust + Axum + Tokio；MySQL/SQLx；Redis；FFmpeg；YOLO 推理服务。
+**Tech Stack:** React + TypeScript + Vitest；Rust + Axum + Tokio；PostgreSQL/SQLx；Redis；FFmpeg；YOLO 推理服务。
 
 **Spec:** 本计划对应用户提出的 1～6 项性能优化需求。
 
@@ -89,8 +89,8 @@
 - [ ] 新增测试：连续进度更新不会每次都调用数据库。
 - [ ] 新增测试：任务完成、失败时即使未达到时间间隔也会写入最终状态。
 - [ ] 在 Worker 中设置最小写库间隔 1～2 秒或进度变化阈值 1%。
-- [ ] 实时进度保留在内存/Redis，MySQL 保存关键状态和最终进度。
-- [ ] 检查 Redis/API 重启后任务状态仍能从 MySQL 恢复。
+- [ ] 实时进度保留在内存/Redis，PostgreSQL 保存关键状态和最终进度。
+- [ ] 检查 Redis/API 重启后任务状态仍能从 PostgreSQL 恢复。
 - [ ] 运行：`cargo test --manifest-path backend/Cargo.toml`。
 
 ### Task 5: 视频抽帧和推理流水线优化

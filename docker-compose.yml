@@ -5,13 +5,13 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       RUST_LOG: info
-      DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
+      DATABASE_URL: postgres://vision:vision_dev_password@postgres:5432/vision_events
       REDIS_URL: redis://redis:6379
       YOLO_URL: http://yolo:9000
     ports: ["8080:8080"]
     volumes: ["media_data:/app/media"]
     depends_on:
-      mysql: { condition: service_healthy }
+      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
   worker:
     build:
@@ -21,14 +21,14 @@ services:
     environment:
       RUST_LOG: info
       WORKER_MODE: "1"
-      DATABASE_URL: mysql://vision:vision_dev_password@mysql:3306/vision_events
+      DATABASE_URL: postgres://vision:vision_dev_password@postgres:5432/vision_events
       REDIS_URL: redis://redis:6379
       YOLO_URL: http://yolo:9000
       YOLO_BATCH_SIZE: "${YOLO_BATCH_SIZE:-4}"
       YOLO_CONCURRENCY: "${YOLO_CONCURRENCY:-2}"
     volumes: ["media_data:/app/media"]
     depends_on:
-      mysql: { condition: service_healthy }
+      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       yolo: { condition: service_started }
   frontend:
@@ -48,16 +48,15 @@ services:
       YOLO_CONFIDENCE: "0.25"
     ports: ["9000:9000"]
     volumes: ["yolo_models:/root/.config/Ultralytics"]
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: postgres:16
     environment:
-      MYSQL_DATABASE: vision_events
-      MYSQL_USER: vision
-      MYSQL_PASSWORD: vision_dev_password
-      MYSQL_ROOT_PASSWORD: root_dev_password
-    volumes: ["mysql_data:/var/lib/mysql"]
+      POSTGRES_DB: vision_events
+      POSTGRES_USER: vision
+      POSTGRES_PASSWORD: vision_dev_password
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U vision -d vision_events"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -69,6 +68,6 @@ services:
       timeout: 3s
       retries: 20
 volumes:
-  mysql_data:
+  postgres_data:
   media_data:
   yolo_models:

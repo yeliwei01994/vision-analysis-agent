@@ -6,7 +6,7 @@
 
 **Architecture:** The Worker will aggregate `RuleEvent` candidates before persistence, then select a bounded chronological evidence set before `MediaStorage` copies JPEGs. Storage owns event-evidence deletion; API composes database deletion with storage cleanup and media response headers; React handles image failures without hiding the rest of the event detail.
 
-**Tech Stack:** Rust 2021, Tokio, Axum, SQLx/MySQL, React, TypeScript, Vitest, Testing Library.
+**Tech Stack:** Rust 2021, Tokio, Axum, SQLx/PostgreSQL, React, TypeScript, Vitest, Testing Library.
 
 **Spec:** `docs/superpowers/specs/2026-08-25-event-quality-evidence-design.md`
 

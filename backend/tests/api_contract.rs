@@ -113,7 +113,7 @@ async fn health_returns_ok() {
 }
 
 #[tokio::test]
-async fn get_job_loads_completed_job_from_mysql_when_api_memory_is_empty() {
+async fn get_job_loads_completed_job_from_postgresql_when_api_memory_is_empty() {
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");
         return;
@@ -142,14 +142,14 @@ async fn get_job_loads_completed_job_from_mysql_when_api_memory_is_empty() {
     assert_eq!(body["status"], "completed");
     assert_eq!(body["progress"], 100);
 
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .execute(&database.pool)
         .await;
 }
 
 #[tokio::test]
-async fn get_job_prefers_mysql_over_stale_api_memory_state() {
+async fn get_job_prefers_postgresql_over_stale_api_memory_state() {
     let Ok(database_url) = env::var("DATABASE_URL") else {
         eprintln!("DATABASE_URL is required for this integration test");
         return;
@@ -184,8 +184,8 @@ async fn get_job_prefers_mysql_over_stale_api_memory_state() {
     assert_eq!(body["status"], "completed");
     assert_eq!(body["progress"], 100);
 
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .execute(&database.pool)
         .await;
 }
@@ -253,7 +253,10 @@ async fn upload_then_process_video_reports_processing_failure_for_invalid_media(
 
 #[tokio::test]
 async fn upload_accepts_video_larger_than_axum_default_body_limit() {
-    let service = app();
+    let temporary = tempfile::tempdir().unwrap();
+    let mut state = AppState::default();
+    state.storage = MediaStorage::new(temporary.path().join("media"));
+    let service = api::router(state);
     let payload = vec![b'x'; 3 * 1024 * 1024];
     let mut body = b"--large\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.mp4\"\r\nContent-Type: video/mp4\r\n\r\n".to_vec();
     body.extend_from_slice(&payload);
@@ -431,12 +434,12 @@ async fn persisted_worker_event_can_be_confirmed_from_a_fresh_api_process() {
         .unwrap();
     assert_eq!(saved.status, vision_event_api::domain::EventStatus::Confirmed);
 
-    let _ = sqlx::query("DELETE FROM events WHERE id = ?")
-        .bind(event.id.to_string())
+    let _ = sqlx::query("DELETE FROM events WHERE id = $1")
+        .bind(event.id)
         .execute(&database.pool)
         .await;
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .execute(&database.pool)
         .await;
 }
@@ -469,8 +472,8 @@ async fn persisted_worker_event_can_be_deleted_from_a_fresh_api_process() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert!(database.get_event(event.id).await.unwrap().is_none());
 
-    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = ?")
-        .bind(job.id.to_string())
+    let _ = sqlx::query("DELETE FROM video_jobs WHERE id = $1")
+        .bind(job.id)
         .execute(&database.pool)
         .await;
 }

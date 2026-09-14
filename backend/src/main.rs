@@ -13,13 +13,13 @@ async fn main() {
         Ok(url) => match Database::connect(&DatabaseConfig::new(url)).await {
             Ok(database) => {
                 if let Err(error) = database.migrate().await {
-                    eprintln!("mysql migration failed: {error}");
+                    eprintln!("PostgreSQL migration failed: {error}");
                 }
-                println!("connected to MySQL for jobs and events");
+                println!("connected to PostgreSQL for jobs and events");
                 Some(database)
             }
             Err(error) => {
-                eprintln!("mysql unavailable, using memory fallback: {error}");
+                eprintln!("PostgreSQL unavailable, using memory fallback: {error}");
                 None
             }
         },
@@ -40,8 +40,12 @@ async fn main() {
         .with_progress_store(progress_store);
     if let Some(database) = &database {
         match database.list_rules().await {
-            Ok(rules) => for rule in rules { state.update_rule(rule.event_type.clone(), rule); },
-            Err(error) => eprintln!("failed to load event rules from MySQL: {error}"),
+            Ok(rules) => {
+                for rule in rules {
+                    state.update_rule(rule.event_type.clone(), rule);
+                }
+            }
+            Err(error) => eprintln!("failed to load event rules from PostgreSQL: {error}"),
         }
     }
     if std::env::var("WORKER_MODE").ok().as_deref() == Some("1") {
