@@ -91,7 +91,7 @@ docker compose up -d
 3. Worker 消费任务，使用 ffmpeg 抽取 JPEG 帧。
 4. Rust `YoloDetector` 调用 `YOLO_URL/v1/infer/frame` 获取真实检测结果。
 5. 检测结果经过规则引擎生成业务事件，并保存模型版本。
-6. 事件结果保存到 MySQL。
+6. 事件结果保存到 PostgreSQL；YOLO 检测对象、证据、规则几何和模型分析等结构化数据以 JSONB 保存。
 7. 前端查询事件并展示证据、分析和审核状态。
 
 ## 当前 API
@@ -125,7 +125,6 @@ PUT  /api/v1/event-rules/{event_type}
 数据库：vision_events
 用户：vision
 密码：vision_dev_password
-Root 密码：root_dev_password
 ```
 
 这些密码仅用于本地开发，生产环境必须通过环境变量或密钥管理系统替换。
@@ -158,10 +157,9 @@ docker compose config
 
 当前平台已经完成基础任务链路、事件规则接口、前端事件审核和 Docker 部署，但仍有以下演进工作：
 
-- 将 Rust Worker 的 MockDetector 接入真实 YOLOv8n 推理服务；
 - 接入大模型事件解释和自然语言检索；
 - 生成事件截图和视频证据片段；
-- 将 Redis Stream 升级为消费组、ACK、重试和死信队列；
+- 完善 Redis Stream 的重试、死信队列和可观测性；
 - 增加用户权限、审计日志和系统监控；
 - 增加开发模式热更新配置；
 - 增加并发任务和长视频压力测试。
@@ -182,6 +180,14 @@ docker compose up -d yolo
 ```
 
 模型权重会缓存到 Docker volume `yolo_models`。上传视频后会自动进入 Worker，前端事件详情显示真实目标类别、置信度和检测器模型版本。
+
+### 检测能力与事件规则
+
+YOLO 负责输出帧内的目标检测结果（例如 `person`、车辆等模型支持的类别）；它并不直接输出“停留”“闯入”等业务行为。Worker 将连续帧的目标结果交给事件规则引擎，再生成可检索、可审核的事件。
+
+当前内置并默认启用的事件规则为 `person_stay`（人员停留）：当人员在规则设定的时间/区域条件内持续出现时，系统生成“人员停留”事件。因此，页面仅显示该事件类型是当前实现范围的正常表现，并不表示 YOLO 只能检测人员。
+
+区域入侵、车辆停留、聚集、未戴安全帽等场景需要分别实现并启用对应的事件规则，同时配置适用的 YOLO 目标类别、区域和时间阈值。
 
 完整 E2E 测试：
 
