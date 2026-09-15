@@ -1,6 +1,6 @@
 # Vision Analysis Agent
 
-基于 Rust、React、MySQL、Redis 和 Docker 构建的视频事件检索与视觉分析平台。
+基于 Rust、React、PostgreSQL、Redis 和 Docker 构建的视频事件检索与视觉分析平台。
 
 平台的目标是把视频中的目标检测结果转换为可检索、可复核、可追踪的业务事件，并为后续接入真实 YOLO 模型和大模型分析接口保留扩展边界。
 
@@ -11,7 +11,7 @@ React 前端
     ↓
 Nginx 反向代理
     ↓
-Rust API ───── MySQL
+Rust API ───── PostgreSQL
     ↓
 Redis 队列
     ↓
@@ -26,8 +26,8 @@ Rust Worker
 | Worker | Rust | 异步消费视频分析任务 |
 | Frontend | React + Vite | 视频任务和事件检索工作台 |
 | Nginx | Nginx | 前端静态资源和 API 反向代理 |
-| Database | MySQL 8.4 | 保存视频任务、事件和检测结果 |
-| Queue | Redis 7 | 处理异步分析任务 |
+| 数据库 | PostgreSQL 16 + JSONB | 保存视频任务、事件和结构化检测结果 |
+| 队列 | Redis 7 | 处理异步分析任务 |
 
 ## 目录结构
 
@@ -38,7 +38,7 @@ vision-analysis-agent/
 │   └── tests/
 ├── frontend/                # React 前端
 │   └── src/
-├── db/                      # MySQL 数据库迁移和初始化数据
+├── db/                      # PostgreSQL 数据库迁移和初始化数据
 │   └── migrations/
 ├── deploy/                  # Nginx 和容器部署配置
 │   └── nginx.conf
